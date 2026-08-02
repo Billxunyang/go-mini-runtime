@@ -52,6 +52,7 @@ type Scheduler interface {
 type FakeScheduler struct {
 }
 
+// Schedule
 func (s *FakeScheduler) Schedule(graph GraphDefinition, snapshot RuntimeSnapshot) (ReadyTaskSet, error) {
 	// find not running finished nodes
 	readyTaskSet := ReadyTaskSet{Tasks: make([]Task, 0)}
@@ -60,10 +61,25 @@ func (s *FakeScheduler) Schedule(graph GraphDefinition, snapshot RuntimeSnapshot
 	}
 	for _, node := range graph.Nodes {
 		// if finish continue
-		if _, ok := snapshot.CompleteNodes[node.ID]; ok {
+		if snapshot.CompleteNodes[node.ID] {
 			continue
 		}
-		readyTaskSet.Tasks = append(readyTaskSet.Tasks, Task{NodeID: node.ID})
+		allDependenciesCompleted := true
+		for _, edge := range graph.Edges {
+			if edge.To != node.ID {
+				continue
+			}
+			if edge.From == "" {
+				continue
+			}
+			if !snapshot.CompleteNodes[edge.From] {
+				allDependenciesCompleted = false
+				break
+			}
+		}
+		if allDependenciesCompleted {
+			readyTaskSet.Tasks = append(readyTaskSet.Tasks, Task{NodeID: node.ID})
+		}
 	}
 	return readyTaskSet, nil
 }
@@ -237,20 +253,21 @@ func (r *Runtime) stopWorker() {
 	close(r.ResultQueue)
 }
 
-func (r *Runtime) runLoop(snapshot RuntimeSnapshot, workerNum int) (err error) {
+func (r *Runtime) runLoop(snapshot RuntimeSnapshot) (newSnapshot RuntimeSnapshot, err error) {
 	var taskSet ReadyTaskSet
-	r.initWorker(workerNum)
+	r.initWorker(r.workerNum)
 	defer r.stopWorker()
 	r.startWorker()
 	needContinue := false
+	newSnapshot = snapshot
 	for {
-		taskSet, err = r.scheduler.Schedule(r.graph, snapshot)
+		taskSet, err = r.scheduler.Schedule(r.graph, newSnapshot)
 		if err != nil {
 			fmt.Println("get scheduler failed ", err)
 			return
 		}
 		if len(taskSet.Tasks) == 0 {
-			needContinue, err = r.decideLoop(snapshot)
+			needContinue, err = r.decideLoop(&newSnapshot)
 			if needContinue {
 				continue
 			} else {
@@ -258,17 +275,17 @@ func (r *Runtime) runLoop(snapshot RuntimeSnapshot, workerNum int) (err error) {
 			}
 		}
 		taskOutcomes := r.executeReadyTasks(taskSet)
-		snapshot, err = r.committer.Commit(snapshot, taskOutcomes)
+		newSnapshot, err = r.committer.Commit(newSnapshot, taskOutcomes)
 		if err != nil {
 			fmt.Println("commit err ", err)
 			return
 		}
-		err = r.checkpointer.Save(snapshot)
+		err = r.checkpointer.Save(newSnapshot)
 		if err != nil {
 			fmt.Println("checkpointer err ", err)
 			return
 		}
-		needContinue, err = r.decideLoop(snapshot)
+		needContinue, err = r.decideLoop(&newSnapshot)
 		if needContinue {
 			continue
 		} else {
@@ -277,11 +294,12 @@ func (r *Runtime) runLoop(snapshot RuntimeSnapshot, workerNum int) (err error) {
 	}
 }
 
-func (r *Runtime) decideLoop(snapshot RuntimeSnapshot) (loopContinue bool, err error) {
+func (r *Runtime) decideLoop(snapshot *RuntimeSnapshot) (loopContinue bool, err error) {
 	loopContinue = false
-	runStatus := r.statusDeterminer.Decision(r.graph, snapshot)
+	runStatus := r.statusDeterminer.Decision(r.graph, *snapshot)
 	switch runStatus {
 	case RuntimeSuccess:
+		snapshot.Status = RuntimeSuccess
 		return
 	case RuntimeFailed:
 		err = fmt.Errorf("runtime failed ")
@@ -305,7 +323,7 @@ func NewRuntimeTest() (err error) {
 	nRun := &Runtime{
 		graph: GraphDefinition{
 			Nodes: []Node{{ID: "A", Name: "node-A"}, {ID: "B", Name: "node-B"}, {ID: "C", Name: "node-C"}},
-			Edges: []Edge{{From: "A", To: "B", NodeId: "B"}, {From: "B", To: "C", NodeId: "B"}, {From: "", To: "A", NodeId: "A"}},
+			Edges: []Edge{{From: "A", To: "B", NodeId: "B"}, {From: "B", To: "C", NodeId: "C"}, {From: "", To: "A", NodeId: "A"}},
 		},
 		workerNum: 2,
 	}
@@ -375,7 +393,7 @@ func (fd *FakeDecision) Decision(definition GraphDefinition, snapshot RuntimeSna
 func main() {
 	graph := GraphDefinition{
 		Nodes: []Node{{ID: "A", Name: "node-A"}, {ID: "B", Name: "node-B"}, {ID: "C", Name: "node-C"}},
-		Edges: []Edge{{From: "A", To: "B", NodeId: "B"}, {From: "B", To: "C", NodeId: "B"}, {From: "", To: "A", NodeId: "A"}},
+		Edges: []Edge{{From: "A", To: "B", NodeId: "B"}, {From: "B", To: "C", NodeId: "C"}, {From: "", To: "A", NodeId: "A"}},
 	}
 	fakeSchedule := FakeScheduler{}
 	fakeExecutor := FakeExecutor{}
@@ -385,8 +403,9 @@ func main() {
 	fakeDecision := FakeDecision{}
 	runtime := NewRuntime(graph, 8, &fakeSchedule, &fakeExecutor, &fakeTaskPolicy, &fakeCommiter, &fakeCheckpointer, &fakeDecision)
 	snapshot := RuntimeSnapshot{RuntimeID: "1", CompleteNodes: make(map[string]bool), Status: RuntimeRunning}
-	err := runtime.runLoop(snapshot, runtime.workerNum)
+	newSnapshot, err := runtime.runLoop(snapshot)
 	if err != nil {
 		fmt.Println(err)
 	}
+	fmt.Println(newSnapshot)
 }
