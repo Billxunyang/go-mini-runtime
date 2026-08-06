@@ -251,3 +251,188 @@ func TestExecuteReadyTasksKeepsAllBatches(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateGraph(t *testing.T) {
+
+	tests := []struct {
+		name    string
+		graph   GraphDefinition
+		wantErr bool
+	}{
+		{
+			name: "valid graph",
+			graph: GraphDefinition{
+				Nodes: []Node{
+					{ID: "A", Name: "A"},
+					{ID: "B", Name: "B"},
+					{ID: "C", Name: "C"},
+				},
+				Edges: []Edge{
+					{
+						From: "A",
+						To:   "B",
+					},
+					{
+						From: "B",
+						To:   "C",
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "empty graph",
+			graph:   GraphDefinition{Nodes: make([]Node, 0)},
+			wantErr: true,
+		},
+		{
+			name: "duplicate node ID",
+			graph: GraphDefinition{
+				Nodes: []Node{
+					{ID: "A", Name: "A"},
+					{ID: "A", Name: "A"},
+					{ID: "B", Name: "B"},
+					{ID: "C", Name: "C"},
+				},
+				Edges: []Edge{
+					{
+						From:   "A",
+						To:     "B",
+						NodeId: "B",
+					},
+					{
+						From:   "B",
+						To:     "C",
+						NodeId: "C",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty edge from",
+			graph: GraphDefinition{
+				Nodes: []Node{
+					{ID: "A", Name: "A"},
+					{ID: "B", Name: "B"},
+					{ID: "C", Name: "C"},
+				},
+				Edges: []Edge{
+					{
+						From:   "",
+						To:     "B",
+						NodeId: "B",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing edge From",
+			graph: GraphDefinition{
+				Nodes: []Node{
+					{ID: "A", Name: "A"},
+					{ID: "B", Name: "B"},
+					{ID: "C", Name: "C"},
+				},
+				Edges: []Edge{
+					{
+						From:   "D",
+						To:     "B",
+						NodeId: "B",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty edge To",
+			graph: GraphDefinition{
+				Nodes: []Node{
+					{ID: "A", Name: "A"},
+					{ID: "B", Name: "B"},
+					{ID: "C", Name: "C"},
+				},
+				Edges: []Edge{
+					{
+						From:   "A",
+						To:     "",
+						NodeId: "B",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing edge To",
+			graph: GraphDefinition{
+				Nodes: []Node{
+					{ID: "A", Name: "A"},
+					{ID: "B", Name: "B"},
+					{ID: "C", Name: "C"},
+				},
+				Edges: []Edge{
+					{
+						From:   "A",
+						To:     "D",
+						NodeId: "B",
+					},
+				},
+			},
+			wantErr: true,
+		},
+
+		//{
+		//	name: "cycle graph",
+		//	graph: GraphDefinition{
+		//		Nodes: []Node{
+		//			{ID: "A", Name: "A"},
+		//			{ID: "B", Name: "B"},
+		//			{ID: "C", Name: "C"},
+		//		},
+		//		Edges: []Edge{
+		//			{
+		//				From:   "A",
+		//				To:     "B",
+		//				NodeId: "B",
+		//			},
+		//			{
+		//				From:   "B",
+		//				To:     "C",
+		//				NodeId: "C",
+		//			},
+		//			{
+		//				From:   "C",
+		//				To:     "A",
+		//				NodeId: "A",
+		//			},
+		//		},
+		//	},
+		//	wantErr: true,
+		//},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := ValidateGraph(test.graph)
+			//if gotErr := err != nil; gotErr != test.wantErr {
+			//	t.Errorf(
+			//		"checkGraphValidate() error = %v, wantErr %v",
+			//		err,
+			//		test.wantErr,
+			//	)
+			//}
+			if test.wantErr && err == nil {
+				t.Fatal("want err but get nil")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("want nil, got error: %v", err)
+			}
+			wantValid := !test.wantErr
+			if got != wantValid {
+				t.Errorf("validation result = %v, want %v", got, wantValid)
+			}
+		})
+	}
+
+}

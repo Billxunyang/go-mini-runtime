@@ -409,3 +409,86 @@ func main() {
 	}
 	fmt.Println(newSnapshot)
 }
+
+func ValidateGraph(definition GraphDefinition) (res bool, err error) {
+	res = true
+	// is empty
+	if len(definition.Nodes) == 0 {
+		res = false
+		err = fmt.Errorf("graph is empty")
+		return
+	}
+	allNodeMap := make(map[string]Node)
+	for _, node := range definition.Nodes {
+		allNodeMap[node.ID] = node
+	}
+	if len(allNodeMap) != len(definition.Nodes) {
+		res = false
+		err = fmt.Errorf("duplicated nodes")
+		return
+	}
+
+	// skip cycleCheck
+	//parentMap := make(map[string]string)
+	for _, edge := range definition.Edges {
+		//if _, ok := parentMap[edge.To]; ok {
+		//	cycleExist := cycleCheck(parentMap, edge.From, edge.To)
+		//	if cycleExist {
+		//		res = false
+		//		err = fmt.Errorf("graph cycle")
+		//		return
+		//	}
+		//
+		//} else {
+		//	parentMap[edge.From] = edge.To
+		//}
+		if len(edge.From) == 0 {
+			res = false
+			err = fmt.Errorf("node id %s from can not empty", edge.NodeId)
+			return
+		}
+
+		if edge.From == edge.To {
+			res = false
+			err = fmt.Errorf("graph cycle")
+			return
+		}
+		if _, ok := allNodeMap[edge.From]; !ok {
+			err = fmt.Errorf("from  node %s not exist, node id %s", edge.From, edge.NodeId)
+			res = false
+			return
+		}
+		if len(edge.To) == 0 {
+			res = false
+			err = fmt.Errorf("node id %s to can not empty", edge.NodeId)
+			return
+		}
+
+		if _, ok := allNodeMap[edge.To]; !ok {
+			err = fmt.Errorf("to  node %s not exist, node id %s", edge.To, edge.NodeId)
+			res = false
+			return
+		}
+	}
+	// from not exist
+	return
+}
+
+//
+//func cycleCheck(parentMap map[string]string, currentParent, currentSon string) bool {
+//	if _, ok := parentMap[currentSon]; !ok {
+//		return false
+//	}
+//	lastChild := ""
+//	for {
+//		if _, ok := parentMap[currentSon]; !ok {
+//			lastChild = currentSon
+//			break
+//		}
+//		currentSon = parentMap[currentSon]
+//	}
+//	if lastChild == currentParent {
+//		return true
+//	}
+//	return false
+//}
