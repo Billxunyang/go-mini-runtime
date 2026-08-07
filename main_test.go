@@ -381,35 +381,52 @@ func TestValidateGraph(t *testing.T) {
 			},
 			wantErr: true,
 		},
-
-		//{
-		//	name: "cycle graph",
-		//	graph: GraphDefinition{
-		//		Nodes: []Node{
-		//			{ID: "A", Name: "A"},
-		//			{ID: "B", Name: "B"},
-		//			{ID: "C", Name: "C"},
-		//		},
-		//		Edges: []Edge{
-		//			{
-		//				From:   "A",
-		//				To:     "B",
-		//				NodeId: "B",
-		//			},
-		//			{
-		//				From:   "B",
-		//				To:     "C",
-		//				NodeId: "C",
-		//			},
-		//			{
-		//				From:   "C",
-		//				To:     "A",
-		//				NodeId: "A",
-		//			},
-		//		},
-		//	},
-		//	wantErr: true,
-		//},
+		//self loop：A → A
+		{
+			name: "self loop",
+			graph: GraphDefinition{
+				Nodes: []Node{
+					{ID: "A", Name: "A"},
+				},
+				Edges: []Edge{
+					{
+						From:   "A",
+						To:     "A",
+						NodeId: "A",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		//multi-node cycle：A → B → C → A
+		{
+			name: "cycle graph",
+			graph: GraphDefinition{
+				Nodes: []Node{
+					{ID: "A", Name: "A"},
+					{ID: "B", Name: "B"},
+					{ID: "C", Name: "C"},
+				},
+				Edges: []Edge{
+					{
+						From:   "A",
+						To:     "B",
+						NodeId: "B",
+					},
+					{
+						From:   "B",
+						To:     "C",
+						NodeId: "C",
+					},
+					{
+						From:   "C",
+						To:     "A",
+						NodeId: "A",
+					},
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, test := range tests {
