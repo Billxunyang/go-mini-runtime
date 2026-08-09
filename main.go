@@ -428,20 +428,7 @@ func ValidateGraph(definition GraphDefinition) (res bool, err error) {
 		return
 	}
 
-	// skip cycleCheck
-	//parentMap := make(map[string]string)
 	for _, edge := range definition.Edges {
-		//if _, ok := parentMap[edge.To]; ok {
-		//	cycleExist := cycleCheck(parentMap, edge.From, edge.To)
-		//	if cycleExist {
-		//		res = false
-		//		err = fmt.Errorf("graph cycle")
-		//		return
-		//	}
-		//
-		//} else {
-		//	parentMap[edge.From] = edge.To
-		//}
 		if len(edge.From) == 0 {
 			res = false
 			err = fmt.Errorf("node id %s from can not empty", edge.NodeId)
@@ -471,24 +458,55 @@ func ValidateGraph(definition GraphDefinition) (res bool, err error) {
 		}
 	}
 	// from not exist
+
+	// skip cycleCheck
+	cycleExist := isAcyclic(definition)
+	if !cycleExist {
+		res = false
+		err = fmt.Errorf("graph cycle")
+		return
+	}
 	return
 }
 
-//
-//func cycleCheck(parentMap map[string]string, currentParent, currentSon string) bool {
-//	if _, ok := parentMap[currentSon]; !ok {
-//		return false
-//	}
-//	lastChild := ""
-//	for {
-//		if _, ok := parentMap[currentSon]; !ok {
-//			lastChild = currentSon
-//			break
-//		}
-//		currentSon = parentMap[currentSon]
-//	}
-//	if lastChild == currentParent {
-//		return true
-//	}
-//	return false
-//}
+func isAcyclic(graph GraphDefinition) bool {
+	operateCount := 0
+	operateQueue := make([]string, 0)
+	//入度map
+	inputDegreeMap := make(map[string]int)
+	// 统计节点出边，出队列的时候要对出边--操作
+	outputEdge := make(map[string][]string)
+	for _, node := range graph.Nodes {
+		inputDegreeMap[node.ID] = 0
+	}
+
+	for _, edgeInfo := range graph.Edges {
+		inputDegreeMap[edgeInfo.To]++
+		if _, ok := outputEdge[edgeInfo.From]; !ok {
+			outputEdge[edgeInfo.From] = make([]string, 0)
+		}
+		outputEdge[edgeInfo.From] = append(outputEdge[edgeInfo.From], edgeInfo.To)
+	}
+
+	// 入度为0的入队列
+	for nodeKey, inputDegreeValue := range inputDegreeMap {
+		if inputDegreeValue == 0 {
+			operateQueue = append(operateQueue, nodeKey)
+		}
+	}
+	// 出队列
+	for len(operateQueue) > 0 {
+		currentNode := operateQueue[0]
+		operateCount++
+		for _, dstNode := range outputEdge[currentNode] {
+			inputDegreeMap[dstNode]--
+			// 入度将为0 入队列
+			if inputDegreeMap[dstNode] == 0 {
+				operateQueue = append(operateQueue, dstNode)
+			}
+		}
+		operateQueue = operateQueue[1:]
+
+	}
+	return operateCount == len(graph.Nodes)
+}

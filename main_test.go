@@ -427,6 +427,42 @@ func TestValidateGraph(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "converging graph with local cycle",
+			graph: GraphDefinition{
+				Nodes: []Node{
+					{ID: "A", Name: "A"},
+					{ID: "B", Name: "B"},
+					{ID: "C", Name: "C"},
+					{ID: "D", Name: "D"},
+					{ID: "E", Name: "E"},
+				},
+				Edges: []Edge{
+					{From: "A", To: "C"},
+					{From: "B", To: "C"},
+					{From: "C", To: "D"},
+					{From: "D", To: "E"},
+					{From: "E", To: "C"}, // C → D → E → C
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "acyclic converging graph",
+			graph: GraphDefinition{
+				Nodes: []Node{
+					{ID: "A", Name: "A"},
+					{ID: "B", Name: "B"},
+					{ID: "C", Name: "C"},
+					{ID: "D", Name: "D"},
+				},
+				Edges: []Edge{
+					{From: "A", To: "C"},
+					{From: "B", To: "C"},
+					{From: "C", To: "D"},
+				}},
+			wantErr: false,
+		},
 	}
 
 	for _, test := range tests {
