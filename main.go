@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
@@ -509,4 +510,66 @@ func isAcyclic(graph GraphDefinition) bool {
 
 	}
 	return operateCount == len(graph.Nodes)
+}
+
+// 注册阶段：
+// Tool → Registry.Register(Tool)
+//
+// 执行阶段：
+// Task
+//
+//	→ ToolExecutor 构造 Invocation
+//	→ Registry.Get(Invocation.ToolName)
+//	→ Tool.Execute(ctx, Invocation)
+//	→ ExecutionResult
+//	→ ToolExecutor 转成 TaskResult
+//	→ TaskPolicy
+//	→ TaskOutcome
+//	→ Committer
+//	→ RuntimeSnapshot
+
+type ToolDefinition struct {
+	Name         string
+	Description  string
+	InputSchema  []SchemaInfo
+	OutputSchema []SchemaInfo
+}
+type Tool interface {
+	Definition() ToolDefinition
+	Execute(ctx context.Context, invocation Invocation) ExecutionResult
+}
+
+type SchemaInfo struct {
+	SchemaName string
+	DataType   string
+	Required   bool
+}
+
+type Invocation struct {
+	ID        string
+	ToolName  string
+	Arguments map[string]any
+}
+type ExecutionResult struct {
+	InvocationID string
+	Output       any
+	Err          *ExecutionError
+}
+type ExecutionErrType string
+
+const (
+	ExecutionTypeBusinessErr    ExecutionErrType = "business"
+	ExecutionTypeToolErr        ExecutionErrType = "tool"
+	ExecutionTypeInfrastructure ExecutionErrType = "infrastructure"
+)
+
+type ExecutionError struct {
+	ErrType ExecutionErrType
+	ErrCode string
+	ErrMsg  string
+}
+
+type ToolRegistry interface {
+	Register(tool Tool) error
+	Get(name string) (Tool, error)
 }
