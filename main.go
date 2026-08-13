@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -255,6 +256,15 @@ func (r *Runtime) stopWorker() {
 }
 
 func (r *Runtime) runLoop(snapshot RuntimeSnapshot) (newSnapshot RuntimeSnapshot, err error) {
+	valid, validateErr := ValidateGraph(r.graph)
+	if validateErr != nil {
+		err = validateErr
+		return
+	}
+	if !valid {
+		err = fmt.Errorf("invalid graph")
+		return
+	}
 	var taskSet ReadyTaskSet
 	r.initWorker(r.workerNum)
 	defer r.stopWorker()
@@ -324,7 +334,7 @@ func NewRuntimeTest() (err error) {
 	nRun := &Runtime{
 		graph: GraphDefinition{
 			Nodes: []Node{{ID: "A", Name: "node-A"}, {ID: "B", Name: "node-B"}, {ID: "C", Name: "node-C"}},
-			Edges: []Edge{{From: "A", To: "B", NodeId: "B"}, {From: "B", To: "C", NodeId: "C"}, {From: "", To: "A", NodeId: "A"}},
+			Edges: []Edge{{From: "A", To: "B", NodeId: "B"}, {From: "B", To: "C", NodeId: "C"}},
 		},
 		workerNum: 2,
 	}
@@ -394,7 +404,7 @@ func (fd *FakeDecision) Decision(definition GraphDefinition, snapshot RuntimeSna
 func main() {
 	graph := GraphDefinition{
 		Nodes: []Node{{ID: "A", Name: "node-A"}, {ID: "B", Name: "node-B"}, {ID: "C", Name: "node-C"}},
-		Edges: []Edge{{From: "A", To: "B", NodeId: "B"}, {From: "B", To: "C", NodeId: "C"}, {From: "", To: "A", NodeId: "A"}},
+		Edges: []Edge{{From: "A", To: "B", NodeId: "B"}, {From: "B", To: "C", NodeId: "C"}},
 	}
 	fakeSchedule := FakeScheduler{}
 	fakeExecutor := FakeExecutor{}
@@ -573,3 +583,59 @@ type ToolRegistry interface {
 	Register(tool Tool) error
 	Get(name string) (Tool, error)
 }
+
+type MemoryToolRegistry struct {
+	registerMap map[string]Tool
+	lock        sync.RWMutex
+}
+
+func NewMemoryToolRegistry() *MemoryToolRegistry {
+
+	return &MemoryToolRegistry{
+		registerMap: make(map[string]Tool),
+	}
+}
+
+func (mTR *MemoryToolRegistry) Register(tool Tool) error {
+	// 1. tool == nil → ErrInvalidTool
+	if tool == nil {
+		return ErrInvalidTool
+	}
+	// 2. 取得 tool.Definition().Name
+	toolName := tool.Definition().Name
+	// 3. name == "" → ErrInvalidToolName
+	if len(toolName) == 0 {
+		return ErrInvalidToolName
+	}
+	// 4. 获取写锁，defer 解锁
+	mTR.lock.Lock()
+	defer mTR.lock.Unlock()
+	// 5. 如果名字已存在 → ErrToolAlreadyRegistered
+	if _, ok := mTR.registerMap[toolName]; ok {
+		return ErrToolAlreadyRegistered
+	}
+	// 6. 写入 registerMap
+	mTR.registerMap[toolName] = tool
+	// 7. 返回 nil
+	return nil
+}
+
+func (mTR *MemoryToolRegistry) Get(name string) (Tool, error) {
+	if len(name) == 0 {
+		return nil, ErrInvalidToolName
+	}
+	mTR.lock.RLock()
+	defer mTR.lock.RUnlock()
+	tool, ok := mTR.registerMap[name]
+	if !ok {
+		return nil, ErrToolNotFound
+	}
+	return tool, nil
+}
+
+var (
+	ErrInvalidTool           = errors.New("invalid tool")
+	ErrInvalidToolName       = errors.New("invalid tool name")
+	ErrToolAlreadyRegistered = errors.New("tool already registered")
+	ErrToolNotFound          = errors.New("tool not found")
+)

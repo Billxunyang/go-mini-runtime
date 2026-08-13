@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -110,7 +112,7 @@ func TestRuntimeABC(t *testing.T) {
 
 	graph := GraphDefinition{
 		Nodes: []Node{{ID: "A", Name: "node-A"}, {ID: "B", Name: "node-B"}, {ID: "C", Name: "node-C"}},
-		Edges: []Edge{{From: "A", To: "B", NodeId: "B"}, {From: "B", To: "C", NodeId: "C"}, {From: "", To: "A", NodeId: "A"}},
+		Edges: []Edge{{From: "A", To: "B", NodeId: "B"}, {From: "B", To: "C", NodeId: "C"}},
 	}
 	snapshot := RuntimeSnapshot{
 		RuntimeID:     "test-runtime-abc",
@@ -488,4 +490,173 @@ func TestValidateGraph(t *testing.T) {
 		})
 	}
 
+}
+
+func TestRegistryRegister(t *testing.T) {
+	registry := NewMemoryToolRegistry()
+	tool := &FakeTool{
+		definition: ToolDefinition{
+			Name: "echo",
+		},
+	}
+
+	err := registry.Register(tool)
+	if err != nil {
+		t.Fatalf("register tool failed: %v", err)
+	}
+}
+
+type FakeTool struct {
+	definition ToolDefinition
+}
+
+func (fT *FakeTool) Definition() ToolDefinition {
+	return fT.definition
+}
+func (fT *FakeTool) Execute(ctx context.Context, invocation Invocation) ExecutionResult {
+	return ExecutionResult{}
+}
+
+type SpyScheduler struct {
+	callCount int
+}
+
+func (s *SpyScheduler) Schedule(
+	graph GraphDefinition,
+	snapshot RuntimeSnapshot,
+) (ReadyTaskSet, error) {
+	s.callCount++
+	return ReadyTaskSet{}, fmt.Errorf("scheduler should not be called")
+}
+
+func TestRegistryGet(t *testing.T) {
+	tool := &FakeTool{
+		definition: ToolDefinition{
+			Name:        "echo",
+			Description: "echo tool",
+		},
+	}
+	registry := NewMemoryToolRegistry()
+
+	err := registry.Register(tool)
+	if err != nil {
+		t.Fatalf("prepare registry failed: %v", err)
+	}
+
+	got, err := registry.Get("echo")
+	if err != nil {
+		t.Fatalf("get tool failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("get tool returned nil")
+	}
+	if got != tool {
+		t.Fatalf("got a different tool: %#v", got)
+	}
+}
+
+func TestRuntimeRejectsInvalidGraphBeforeStartingWorkers(t *testing.T) {
+	graph := GraphDefinition{
+		Nodes: []Node{{ID: "A", Name: "A"}},
+		Edges: []Edge{{From: "A", To: "A"}},
+	}
+	scheduler := &SpyScheduler{}
+
+	runtimeInstance := NewRuntime(
+		graph,
+		1,
+		scheduler,
+		&FakeExecutor{},
+		&FakeTaskPolicy{},
+		&FakeCommitter{},
+		&FakeCheckpointer{},
+		&FakeDecision{},
+	)
+
+	snapshot := RuntimeSnapshot{
+		RuntimeID:     "invalid-graph",
+		CompleteNodes: make(map[string]bool),
+		Status:        RuntimeRunning,
+	}
+
+	_, err := runtimeInstance.runLoop(snapshot)
+
+	if err == nil {
+		t.Fatal("want graph validation error, got nil")
+	}
+
+	if err.Error() != "graph cycle" {
+		t.Fatalf("error = %q, want %q", err.Error(), "graph cycle")
+	}
+
+	if scheduler.callCount != 0 {
+		t.Fatalf(
+			"scheduler call count = %d, want 0",
+			scheduler.callCount,
+		)
+	}
+
+	if runtimeInstance.TaskQueue != nil ||
+		runtimeInstance.ResultQueue != nil {
+		t.Fatal("worker queues should not be initialized")
+	}
+
+}
+func TestRegistryRejectsDuplicateTool(t *testing.T) {
+	registry := NewMemoryToolRegistry()
+
+	originalTool := &FakeTool{
+		definition: ToolDefinition{
+			Name:        "echo",
+			Description: "original",
+		},
+	}
+	duplicateTool := &FakeTool{
+		definition: ToolDefinition{
+			Name:        "echo",
+			Description: "duplicate",
+		},
+	}
+
+	err := registry.Register(originalTool)
+	if err != nil {
+		t.Fatalf("register original tool failed: %v", err)
+	}
+
+	err = registry.Register(duplicateTool)
+	if !errors.Is(err, ErrToolAlreadyRegistered) {
+		t.Fatalf(
+			"register duplicate tool error = %v, want %v",
+			err,
+			ErrToolAlreadyRegistered,
+		)
+	}
+
+	got, err := registry.Get("echo")
+	if err != nil {
+		t.Fatalf("get original tool failed: %v", err)
+	}
+
+	if got != originalTool {
+		t.Fatalf(
+			"tool was overwritten: got %#v, want %#v",
+			got,
+			originalTool,
+		)
+	}
+}
+
+func TestRegistryReturnsErrorForMissingTool(t *testing.T) {
+	registry := NewMemoryToolRegistry()
+	got, err := registry.Get("missing")
+	if !errors.Is(err, ErrToolNotFound) {
+		t.Fatalf(
+			"get missing tool error = %v, want %v",
+			err,
+			ErrToolNotFound,
+		)
+	}
+	if got != nil {
+		t.Fatalf("get missing tool = %#v, want nil", got)
+	}
 }
