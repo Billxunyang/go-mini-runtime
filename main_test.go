@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 )
 
 type RecordingExecutor struct {
@@ -659,4 +660,176 @@ func TestRegistryReturnsErrorForMissingTool(t *testing.T) {
 	if got != nil {
 		t.Fatalf("get missing tool = %#v, want nil", got)
 	}
+}
+
+type SuccessTool struct {
+	definition ToolDefinition
+	output     any
+}
+
+func (sT *SuccessTool) Definition() ToolDefinition {
+	return sT.definition
+}
+
+func (sT *SuccessTool) Execute(ctx context.Context, invocation Invocation) ExecutionResult {
+	return ExecutionResult{
+		InvocationID: invocation.ID,
+		Output:       sT.output,
+		Err:          nil,
+	}
+}
+
+func TestSuccessToolExecute(t *testing.T) {
+	tool := &SuccessTool{
+		definition: ToolDefinition{
+			Name: "success",
+		},
+		output: "hello",
+	}
+	invocation := Invocation{
+		ID:        "invocation-1",
+		ToolName:  "success",
+		Arguments: map[string]interface{}{},
+	}
+	result := tool.Execute(context.Background(), invocation)
+	if result.InvocationID != invocation.ID {
+		t.Fatalf(
+			"invocation ID = %q, want %q",
+			result.InvocationID,
+			invocation.ID,
+		)
+	}
+	if result.Output != tool.output {
+		t.Fatalf(
+			"tool.output = %q, want %q",
+			result.Output, tool.output)
+	}
+	if result.Err != nil {
+		t.Fatalf("error = %v, want nil", result.Err)
+	}
+}
+
+type InvalidArgumentsTool struct {
+	definition ToolDefinition
+}
+
+func (t *InvalidArgumentsTool) Definition() ToolDefinition {
+	return t.definition
+}
+
+func (t *InvalidArgumentsTool) Execute(
+	ctx context.Context,
+	invocation Invocation,
+) ExecutionResult {
+	return ExecutionResult{
+		InvocationID: invocation.ID,
+		Err: &ExecutionError{
+			ErrType: ExecutionTypeToolErr,
+			ErrCode: "MISSING_REQUIRED_ARGUMENT",
+			ErrMsg:  "missing required argument",
+		},
+	}
+}
+
+func TestInvalidArgumentsToolExecute(t *testing.T) {
+	tool := &InvalidArgumentsTool{
+		definition: ToolDefinition{
+			Name: "invalid argument tool",
+		},
+	}
+	invocation := Invocation{
+		ID:       "invocation-2",
+		ToolName: "invalid argument tool",
+	}
+	result := tool.Execute(context.Background(), invocation)
+	//InvocationID 与请求一致
+
+	if result.InvocationID != invocation.ID {
+		t.Fatalf(
+			"invocation ID = %q, want %q",
+			result.InvocationID,
+			invocation.ID,
+		)
+	}
+	//Output == nil
+	if result.Output != nil {
+		t.Fatalf("output = %#v, want nil", result.Output)
+	}
+
+	//Err != nil
+	if result.Err == nil {
+		t.Fatal("error is nil, want tool error")
+	}
+	//ErrType == ExecutionTypeToolErr
+	if result.Err.ErrType != ExecutionTypeToolErr {
+		t.Fatalf("error = %q, want ExecutionTypeToolErr", result.Err.ErrType)
+	}
+	if result.Err.ErrCode != "MISSING_REQUIRED_ARGUMENT" {
+		t.Fatalf("err code = %q, want MISSING_REQUIRED_ARGUMENT", result.Err.ErrCode)
+	}
+}
+
+type TimeoutTool struct {
+	definition ToolDefinition
+}
+
+func (t *TimeoutTool) Definition() ToolDefinition {
+	return t.definition
+}
+
+func (t *TimeoutTool) Execute(
+	ctx context.Context,
+	invocation Invocation,
+) ExecutionResult {
+	<-ctx.Done()
+
+	executionErr := &ExecutionError{
+		ErrType: ExecutionTypeInfrastructure,
+		ErrMsg:  ctx.Err().Error(),
+	}
+
+	switch ctx.Err() {
+	case context.DeadlineExceeded:
+		executionErr.ErrCode = "TOOL_TIMEOUT"
+	case context.Canceled:
+		executionErr.ErrCode = "TOOL_CANCELED"
+	}
+
+	return ExecutionResult{
+		InvocationID: invocation.ID,
+		Err:          executionErr,
+	}
+}
+func TestTimeoutToolExecute(t *testing.T) {
+	tool := &TimeoutTool{
+		definition: ToolDefinition{
+			Name: "timeout",
+		},
+	}
+	invocation := Invocation{
+		ID:       "invocation-3",
+		ToolName: "timeout",
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Millisecond,
+	)
+	defer cancel()
+	result := tool.Execute(ctx, invocation)
+	if result.Output != nil {
+		t.Fatalf("output = %#v, want nil", result.Output)
+	}
+	if result.InvocationID != invocation.ID {
+		t.Fatalf("invocation ID = %q, want %q", result.InvocationID, invocation.ID)
+	}
+	if result.Err == nil {
+		t.Fatal("error is nil, want infrastructure error")
+	}
+	if result.Err.ErrType != ExecutionTypeInfrastructure {
+		t.Fatalf("error = %q, want ExecutionTypeInfrastructure", result.Err.ErrType)
+	}
+	if result.Err.ErrCode != "TOOL_TIMEOUT" {
+		t.Fatalf("error = %q, want TOOL_TIMEOUT", result.Err.ErrCode)
+	}
+
 }
