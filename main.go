@@ -639,3 +639,36 @@ var (
 	ErrToolAlreadyRegistered = errors.New("tool already registered")
 	ErrToolNotFound          = errors.New("tool not found")
 )
+
+type RegistryToolExecutor struct {
+	registry ToolRegistry
+}
+
+func NewRegistryToolExecutor(toolRegistry ToolRegistry) *RegistryToolExecutor {
+	return &RegistryToolExecutor{
+		registry: toolRegistry,
+	}
+}
+
+func (e *RegistryToolExecutor) Execute(
+	ctx context.Context,
+	invocation Invocation,
+) ExecutionResult {
+	//今天先完成成功路径：
+	tool, err := e.registry.Get(invocation.ToolName)
+	if err != nil {
+		return ExecutionResult{
+			InvocationID: invocation.ID,
+			Err: &ExecutionError{
+				ErrType: ExecutionTypeToolErr,
+				ErrCode: "tool not found",
+				ErrMsg:  err.Error(),
+			},
+		}
+	}
+	//用 invocation.ToolName 调用 e.registry.Get()。
+	//获取 Tool。
+	//调用并返回 tool.Execute(ctx, invocation)。
+	result := tool.Execute(ctx, invocation)
+	return result
+}

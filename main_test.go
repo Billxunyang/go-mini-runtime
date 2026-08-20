@@ -831,5 +831,74 @@ func TestTimeoutToolExecute(t *testing.T) {
 	if result.Err.ErrCode != "TOOL_TIMEOUT" {
 		t.Fatalf("error = %q, want TOOL_TIMEOUT", result.Err.ErrCode)
 	}
+}
 
+func TestRegistryToolExecutorExecuteSuccess(t *testing.T) {
+	memoryToolRegistry := NewMemoryToolRegistry()
+
+	tool := &SuccessTool{
+		definition: ToolDefinition{
+			Name: "success",
+		},
+		output: "success",
+	}
+	err := memoryToolRegistry.Register(tool)
+	if err != nil {
+		t.Fatalf("error registering tool: %v", err)
+	}
+	registryToolExecutor := NewRegistryToolExecutor(memoryToolRegistry)
+	result := registryToolExecutor.Execute(context.Background(), Invocation{
+		ID:       "invocation-1",
+		ToolName: "success",
+	})
+	if result.InvocationID != "invocation-1" {
+		t.Fatalf("invocation ID = %q, want invocation-1", result.InvocationID)
+	}
+	if result.Err != nil {
+		t.Fatalf("execute returned unexpected error: %v", result.Err)
+	}
+	if result.Output != tool.output {
+		t.Fatalf("output = %#v, want %#v", result.Output, tool.output)
+	}
+}
+
+func TestRegistryToolExecutorPropagatesCancellation(t *testing.T) {
+	//流程：
+	//Given：Registry 注册 TimeoutTool
+	memoryToolRegistry := NewMemoryToolRegistry()
+	timeoutTool := &TimeoutTool{
+		definition: ToolDefinition{
+			Name: "timeout",
+		},
+	}
+	err := memoryToolRegistry.Register(timeoutTool)
+	if err != nil {
+		t.Fatalf("error registering tool: %v", err)
+	}
+
+	//And：创建可取消的 ctx，并调用 cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	//When：RegistryToolExecutor.Execute(ctx, invocation)
+	registryToolExecutor := NewRegistryToolExecutor(memoryToolRegistry)
+	result := registryToolExecutor.Execute(ctx, Invocation{
+		ID:       "invocation-2",
+		ToolName: "timeout",
+	})
+	if result.InvocationID != "invocation-2" {
+		t.Fatalf("invocation ID = %q, want invocation-2", result.InvocationID)
+	}
+	if result.Err == nil {
+		t.Fatalf("execute not nil returned nil")
+	}
+	if result.Output != nil {
+		t.Fatalf("output = %#v, want nil", result.Output)
+	}
+	if result.Err.ErrType != ExecutionTypeInfrastructure {
+		t.Fatalf("error = %q, want Infrastructure error", result.Err.ErrType)
+	}
+
+	if result.Err.ErrCode != "TOOL_CANCELED" {
+		t.Fatalf("error code = %q, want TOOL_CANCELED", result.Err.ErrCode)
+	}
 }
