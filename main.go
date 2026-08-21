@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 type GraphDefinition struct {
@@ -16,8 +17,10 @@ type GraphDefinition struct {
 }
 
 type Node struct {
-	ID   string
-	Name string
+	ID        string
+	Name      string
+	ToolName  string
+	Arguments map[string]any
 }
 
 type Edge struct {
@@ -32,12 +35,15 @@ type RuntimeSnapshot struct {
 	RuntimeID     string
 	CompleteNodes map[string]bool
 	Status        RuntimeStatus
+	FailedNodes   map[string]bool
 }
 
 type Task struct {
 	// Task
 	// TODO: define task
-	NodeID string
+	NodeID    string
+	ToolName  string
+	Arguments map[string]any
 }
 
 type ReadyTaskSet struct {
@@ -80,7 +86,11 @@ func (s *FakeScheduler) Schedule(graph GraphDefinition, snapshot RuntimeSnapshot
 			}
 		}
 		if allDependenciesCompleted {
-			readyTaskSet.Tasks = append(readyTaskSet.Tasks, Task{NodeID: node.ID})
+			readyTaskSet.Tasks = append(readyTaskSet.Tasks, Task{
+				NodeID:    node.ID,
+				ToolName:  node.ToolName,
+				Arguments: node.Arguments,
+			})
 		}
 	}
 	return readyTaskSet, nil
@@ -91,18 +101,19 @@ func (s *FakeScheduler) Schedule(graph GraphDefinition, snapshot RuntimeSnapshot
 type TaskResult struct {
 	// Task result
 	// TODO: define task result
-	NodeID string
-	Err    error
+	NodeID          string
+	Err             error
+	ExecutionResult ExecutionResult
 }
 type Executor interface {
 	// Execute a task return a taskResult
-	Execute(task Task) TaskResult
+	Execute(ctx context.Context, task Task) TaskResult
 }
 
 type FakeExecutor struct {
 }
 
-func (fe *FakeExecutor) Execute(task Task) TaskResult {
+func (fe *FakeExecutor) Execute(ctx context.Context, task Task) TaskResult {
 	fmt.Println("执行任务", task.NodeID)
 	return TaskResult{NodeID: task.NodeID, Err: nil}
 }
@@ -112,7 +123,14 @@ type FakeTaskPolicy struct {
 
 func (tp *FakeTaskPolicy) Evaluate(result TaskResult) TaskOutcome {
 	if result.Err != nil {
-		return TaskOutcome{NodeID: result.NodeID, Success: false}
+		return TaskOutcome{
+			NodeID:  result.NodeID,
+			Err:     result.Err,
+			Success: false,
+		}
+	}
+	if result.ExecutionResult.Err != nil {
+		return TaskOutcome{NodeID: result.NodeID, Success: false, Err: result.ExecutionResult.Err}
 	}
 	return TaskOutcome{NodeID: result.NodeID, Success: true}
 }
@@ -143,11 +161,12 @@ type FakeCommitter struct {
 
 func (fc *FakeCommitter) Commit(snapshot RuntimeSnapshot, outcomes []TaskOutcome) (RuntimeSnapshot, error) {
 	for _, outcome := range outcomes {
-		fmt.Println("保存结果", outcome.NodeID)
 		if outcome.Success {
-
 			snapshot.CompleteNodes[outcome.NodeID] = true
+			delete(snapshot.FailedNodes, outcome.NodeID)
+			continue
 		}
+		snapshot.FailedNodes[outcome.NodeID] = true
 	}
 	return snapshot, nil
 }
@@ -160,8 +179,11 @@ func (f *FakeCheckpointer) Save(snapshot RuntimeSnapshot) error {
 }
 
 func (f *FakeCheckpointer) Load(runtimeId string) (RuntimeSnapshot, error) {
-
-	return RuntimeSnapshot{RuntimeID: runtimeId}, nil
+	return RuntimeSnapshot{
+		RuntimeID:     runtimeId,
+		CompleteNodes: make(map[string]bool),
+		FailedNodes:   make(map[string]bool),
+	}, nil
 }
 
 type Checkpointer interface {
@@ -207,13 +229,13 @@ func (r *Runtime) initWorker(workerNum int) {
 	r.ResultQueue = make(chan TaskResult, workerNum)
 }
 
-func (r *Runtime) startWorker() {
+func (r *Runtime) startWorker(ctx context.Context) {
 	for i := 0; i < r.workerNum; i++ {
 		r.waitGroup.Add(1)
 		go func() {
 			defer r.waitGroup.Done()
 			for taskInfo := range r.TaskQueue {
-				result := r.executor.Execute(taskInfo)
+				result := r.executor.Execute(ctx, taskInfo)
 				r.ResultQueue <- result
 			}
 		}()
@@ -255,7 +277,7 @@ func (r *Runtime) stopWorker() {
 	close(r.ResultQueue)
 }
 
-func (r *Runtime) runLoop(snapshot RuntimeSnapshot) (newSnapshot RuntimeSnapshot, err error) {
+func (r *Runtime) runLoop(ctx context.Context, snapshot RuntimeSnapshot) (newSnapshot RuntimeSnapshot, err error) {
 	valid, validateErr := ValidateGraph(r.graph)
 	if validateErr != nil {
 		err = validateErr
@@ -268,7 +290,7 @@ func (r *Runtime) runLoop(snapshot RuntimeSnapshot) (newSnapshot RuntimeSnapshot
 	var taskSet ReadyTaskSet
 	r.initWorker(r.workerNum)
 	defer r.stopWorker()
-	r.startWorker()
+	r.startWorker(ctx)
 	needContinue := false
 	newSnapshot = snapshot
 	for {
@@ -313,15 +335,19 @@ func (r *Runtime) decideLoop(snapshot *RuntimeSnapshot) (loopContinue bool, err 
 		snapshot.Status = RuntimeSuccess
 		return
 	case RuntimeFailed:
+		snapshot.Status = RuntimeFailed
 		err = fmt.Errorf("runtime failed ")
 		return
 	case RuntimeWaiting:
+		snapshot.Status = RuntimeWaiting
 		err = fmt.Errorf("runtime waiting ")
 		return
 	case RuntimeDeadLock:
+		snapshot.Status = RuntimeDeadLock
 		err = fmt.Errorf("runtime deadlock")
 		return
 	case RuntimeRunning:
+		snapshot.Status = RuntimeRunning
 		loopContinue = true
 	default:
 		err = fmt.Errorf("runtime unknown")
@@ -331,6 +357,7 @@ func (r *Runtime) decideLoop(snapshot *RuntimeSnapshot) (loopContinue bool, err 
 }
 
 func NewRuntimeTest() (err error) {
+	ctx := context.Background()
 	nRun := &Runtime{
 		graph: GraphDefinition{
 			Nodes: []Node{{ID: "A", Name: "node-A"}, {ID: "B", Name: "node-B"}, {ID: "C", Name: "node-C"}},
@@ -340,6 +367,7 @@ func NewRuntimeTest() (err error) {
 	}
 	snapshot := RuntimeSnapshot{
 		CompleteNodes: make(map[string]bool),
+		FailedNodes:   make(map[string]bool),
 	}
 	fakeSchedule := FakeScheduler{}
 	readyTaskSet, err := fakeSchedule.Schedule(nRun.graph, snapshot)
@@ -353,7 +381,7 @@ func NewRuntimeTest() (err error) {
 	fakeCheckpointer := FakeCheckpointer{}
 	fakeDecision := FakeDecision{}
 	for _, taskInfo := range readyTaskSet.Tasks {
-		taskResult := fakeExecutor.Execute(taskInfo)
+		taskResult := fakeExecutor.Execute(ctx, taskInfo)
 		taskOutcom := fakeTaskPolicy.Evaluate(taskResult)
 		snapshot, err = fakeCommiter.Commit(snapshot, []TaskOutcome{taskOutcom})
 		if err != nil {
@@ -393,6 +421,12 @@ type FakeDecision struct {
 }
 
 func (fd *FakeDecision) Decision(definition GraphDefinition, snapshot RuntimeSnapshot) RuntimeStatus {
+	for _, failed := range snapshot.FailedNodes {
+		if failed {
+			return RuntimeFailed
+		}
+	}
+
 	for _, nodeInfo := range definition.Nodes {
 		if completeValue, ok := snapshot.CompleteNodes[nodeInfo.ID]; !ok || !completeValue {
 			return RuntimeRunning
@@ -413,8 +447,14 @@ func main() {
 	fakeCheckpointer := FakeCheckpointer{}
 	fakeDecision := FakeDecision{}
 	runtime := NewRuntime(graph, 8, &fakeSchedule, &fakeExecutor, &fakeTaskPolicy, &fakeCommiter, &fakeCheckpointer, &fakeDecision)
-	snapshot := RuntimeSnapshot{RuntimeID: "1", CompleteNodes: make(map[string]bool), Status: RuntimeRunning}
-	newSnapshot, err := runtime.runLoop(snapshot)
+	ctx := context.Background()
+	snapshot := RuntimeSnapshot{
+		RuntimeID:     "1",
+		CompleteNodes: make(map[string]bool),
+		FailedNodes:   make(map[string]bool),
+		Status:        RuntimeRunning,
+	}
+	newSnapshot, err := runtime.runLoop(ctx, snapshot)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -671,4 +711,42 @@ func (e *RegistryToolExecutor) Execute(
 	//调用并返回 tool.Execute(ctx, invocation)。
 	result := tool.Execute(ctx, invocation)
 	return result
+}
+
+type ToolTaskExecutor struct {
+	toolExecutor *RegistryToolExecutor
+	sequence     atomic.Uint64
+}
+
+func NewToolTaskExecutor(toolExecutor *RegistryToolExecutor) *ToolTaskExecutor {
+	return &ToolTaskExecutor{
+		toolExecutor: toolExecutor,
+	}
+}
+
+func (e *ToolTaskExecutor) Execute(
+	ctx context.Context,
+	task Task,
+) TaskResult {
+	sequence := e.sequence.Add(1)
+	invocationID := fmt.Sprintf("%s-%d", task.NodeID, sequence)
+	result := e.toolExecutor.Execute(ctx, Invocation{
+		ID:        invocationID,
+		ToolName:  task.ToolName,
+		Arguments: task.Arguments,
+	})
+
+	return TaskResult{
+		NodeID:          task.NodeID,
+		ExecutionResult: result,
+	}
+}
+
+func (e *ExecutionError) Error() string {
+	return fmt.Sprintf(
+		"type=%s code=%s message=%s",
+		e.ErrType,
+		e.ErrCode,
+		e.ErrMsg,
+	)
 }

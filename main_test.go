@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"sync"
 	"testing"
@@ -23,7 +24,7 @@ type RecordingExecutor struct {
 // 解锁。
 // 返回成功的 TaskResult。
 
-func (r *RecordingExecutor) Execute(task Task) TaskResult {
+func (r *RecordingExecutor) Execute(ctx context.Context, task Task) TaskResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -69,9 +70,9 @@ func (rC *RecordingCheckpointer) Save(snapshot RuntimeSnapshot) error {
 func cloneSnapshot(snapshot RuntimeSnapshot) RuntimeSnapshot {
 	dstSnapshot := snapshot
 	dstSnapshot.CompleteNodes = make(map[string]bool, len(snapshot.CompleteNodes))
-	for nodeId, completed := range snapshot.CompleteNodes {
-		dstSnapshot.CompleteNodes[nodeId] = completed
-	}
+	dstSnapshot.FailedNodes = make(map[string]bool, len(snapshot.FailedNodes))
+	maps.Copy(dstSnapshot.CompleteNodes, snapshot.CompleteNodes)
+	maps.Copy(dstSnapshot.FailedNodes, snapshot.FailedNodes)
 	return dstSnapshot
 }
 
@@ -119,6 +120,7 @@ func TestRuntimeABC(t *testing.T) {
 		RuntimeID:     "test-runtime-abc",
 		Status:        RuntimeRunning,
 		CompleteNodes: make(map[string]bool),
+		FailedNodes:   make(map[string]bool),
 	}
 	fakeSchedule := &FakeScheduler{}
 	recordExecutor := &RecordingExecutor{}
@@ -128,7 +130,7 @@ func TestRuntimeABC(t *testing.T) {
 	fakeDecision := &FakeDecision{}
 	nRun := NewRuntime(graph, 2, fakeSchedule, recordExecutor, fakeTaskPolicy, fakeCommiter, recordCheckpointer, fakeDecision)
 
-	finalSnapshot, err := nRun.runLoop(snapshot)
+	finalSnapshot, err := nRun.runLoop(context.Background(), snapshot)
 	if err != nil {
 		t.Fatalf("runLoop returned error: %v", err)
 	}
@@ -206,7 +208,7 @@ func TestExecuteReadyTasksKeepsAllBatches(t *testing.T) {
 	}
 
 	runtimeEngine.initWorker(runtimeEngine.workerNum)
-	runtimeEngine.startWorker()
+	runtimeEngine.startWorker(context.Background())
 	defer runtimeEngine.stopWorker()
 
 	readyTaskSet := ReadyTaskSet{
@@ -577,10 +579,11 @@ func TestRuntimeRejectsInvalidGraphBeforeStartingWorkers(t *testing.T) {
 	snapshot := RuntimeSnapshot{
 		RuntimeID:     "invalid-graph",
 		CompleteNodes: make(map[string]bool),
+		FailedNodes:   make(map[string]bool),
 		Status:        RuntimeRunning,
 	}
 
-	_, err := runtimeInstance.runLoop(snapshot)
+	_, err := runtimeInstance.runLoop(context.Background(), snapshot)
 
 	if err == nil {
 		t.Fatal("want graph validation error, got nil")
@@ -901,4 +904,264 @@ func TestRegistryToolExecutorPropagatesCancellation(t *testing.T) {
 	if result.Err.ErrCode != "TOOL_CANCELED" {
 		t.Fatalf("error code = %q, want TOOL_CANCELED", result.Err.ErrCode)
 	}
+}
+
+func TestToolTaskExecutorExecuteSuccess(t *testing.T) {
+	//创建 MemoryToolRegistry。
+	memoryToolRegistry := NewMemoryToolRegistry()
+	successTool := &SuccessTool{
+		definition: ToolDefinition{
+			Name: "success",
+		},
+		output: "success",
+	}
+	//注册名为 success 的 SuccessTool。
+	err := memoryToolRegistry.Register(successTool)
+	if err != nil {
+		t.Fatalf("error registering tool: %v", err)
+	}
+	//创建 RegistryToolExecutor。
+	registryToolExecutor := NewRegistryToolExecutor(memoryToolRegistry)
+	//创建 ToolTaskExecutor。
+	toolTaskExecutor := NewToolTaskExecutor(registryToolExecutor)
+	//创建 Task：
+	task := Task{
+		NodeID:   "node-A",
+		ToolName: "success",
+		Arguments: map[string]any{
+			"message": "hello",
+		}}
+	result := toolTaskExecutor.Execute(context.Background(), task)
+	//result.NodeID == "node-A"
+	//result.ExecutionResult.InvocationID == "node-A-1"
+	//result.ExecutionResult.Output == SuccessTool预期输出
+	//result.ExecutionResult.Err == nil
+	if result.NodeID != "node-A" {
+		t.Fatalf("task ID = %q, want node-A", result.NodeID)
+	}
+	if result.ExecutionResult.InvocationID != "node-A-1" {
+		t.Fatalf("invocation ID = %q, want node-A-1", result.ExecutionResult.InvocationID)
+	}
+	if result.ExecutionResult.Output != successTool.output {
+		t.Fatalf("output = %#v, want %#v", result.ExecutionResult.Output, successTool.output)
+	}
+	if result.ExecutionResult.Err != nil {
+		t.Fatalf("execute returned unexpected error: %v", result.ExecutionResult.Err)
+	}
+}
+
+func TestRuntimeExecutesToolTaskSuccessfully(t *testing.T) {
+	registry := NewMemoryToolRegistry()
+	tool := &SuccessTool{
+		definition: ToolDefinition{Name: "success"},
+		output:     "success",
+	}
+	if err := registry.Register(tool); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	registryExecutor := NewRegistryToolExecutor(registry)
+	toolTaskExecutor := NewToolTaskExecutor(registryExecutor)
+	graph := GraphDefinition{
+		Nodes: []Node{
+			{
+				ID:       "A",
+				Name:     "node-A",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+		},
+	}
+	checkpointer := &RecordingCheckpointer{}
+
+	runtimeEngine := NewRuntime(
+		graph,
+		1,
+		&FakeScheduler{},
+		toolTaskExecutor,
+		&FakeTaskPolicy{},
+		&FakeCommitter{},
+		checkpointer,
+		&FakeDecision{},
+	)
+	finalSnapshot, err := runtimeEngine.runLoop(
+		context.Background(),
+		RuntimeSnapshot{
+			RuntimeID:     "runtime-tool-success",
+			CompleteNodes: make(map[string]bool),
+			FailedNodes:   make(map[string]bool),
+			Status:        RuntimeRunning,
+		},
+	)
+	if err != nil {
+		t.Fatalf("runLoop: %v", err)
+	}
+	//finalSnapshot.Status == RuntimeSuccess
+	if finalSnapshot.Status != RuntimeSuccess {
+		t.Fatalf("finalSnapshot = %#v, want RuntimeSuccess", finalSnapshot.Status)
+	}
+	//finalSnapshot.CompleteNodes["A"] == true
+	if finalSnapshot.CompleteNodes["A"] != true {
+		t.Fatalf("finalSnapshot node A = %#v, want true", finalSnapshot.CompleteNodes["A"])
+	}
+	//checkpointer.SaveCount() == 1
+	if checkpointer.SaveCount() != 1 {
+		t.Fatalf("checkpointer.SaveCount = %d, want 1", checkpointer.SaveCount())
+	}
+}
+
+func TestRuntimeRecordsInvalidArgumentsAsFailure(t *testing.T) {
+	//Given：
+	invalidArgumentTool := InvalidArgumentsTool{
+		definition: ToolDefinition{
+			Name: "invalid-argument",
+		},
+	}
+	registry := NewMemoryToolRegistry()
+	err := registry.Register(&invalidArgumentTool)
+	if err != nil {
+		t.Fatalf("error registering tool: %v", err)
+	}
+
+	registryExecutor := NewRegistryToolExecutor(registry)
+	toolTaskExecutor := NewToolTaskExecutor(registryExecutor)
+	//- Registry 注册 InvalidArgumentsTool，名称保持一致。
+	graph := GraphDefinition{
+		Nodes: []Node{
+			{
+				ID:       "A",
+				Name:     "node-A",
+				ToolName: "invalid-argument",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+		},
+	}
+	checkpointer := &RecordingCheckpointer{}
+
+	runtimeEngine := NewRuntime(
+		graph,
+		1,
+		&FakeScheduler{},
+		toolTaskExecutor,
+		&FakeTaskPolicy{},
+		&FakeCommitter{},
+		checkpointer,
+		&FakeDecision{},
+	)
+	finalSnapshot, err := runtimeEngine.runLoop(
+		context.Background(),
+		RuntimeSnapshot{
+			RuntimeID:     "runtime-invalid-argument",
+			CompleteNodes: make(map[string]bool),
+			FailedNodes:   make(map[string]bool),
+			Status:        RuntimeRunning,
+		},
+	)
+	if err == nil {
+		t.Fatalf("runLoop succeeded unexpectedly")
+	}
+	//finalSnapshot.Status == RuntimeSuccess
+	if finalSnapshot.Status != RuntimeFailed {
+		t.Fatalf("finalSnapshot = %#v, want RuntimeFailed", finalSnapshot.Status)
+	}
+	//finalSnapshot.CompleteNodes["A"] == true
+	if finalSnapshot.CompleteNodes["A"] == true {
+		t.Fatalf("finalSnapshot = %#v, want false", finalSnapshot.CompleteNodes["A"])
+	}
+	if finalSnapshot.FailedNodes["A"] != true {
+		t.Fatalf("finalSnapshot = %#v, want true", finalSnapshot.FailedNodes["A"])
+	}
+
+	//checkpointer.SaveCount() == 1
+	if checkpointer.SaveCount() != 1 {
+		t.Fatalf("checkpointer.SaveCount = %d, want 1", checkpointer.SaveCount())
+	}
+	snapshots := checkpointer.Snapshots()
+	if !snapshots[0].FailedNodes["A"] {
+		t.Fatal("checkpoint did not persist node A failure")
+	}
+}
+
+func TestRuntimeRecordsToolTimeoutAsFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	timeoutTool := TimeoutTool{
+		definition: ToolDefinition{
+			Name: "timeout",
+		},
+	}
+	registry := NewMemoryToolRegistry()
+	err := registry.Register(&timeoutTool)
+	if err != nil {
+		t.Fatalf("error registering tool: %v", err)
+	}
+	registryExecutor := NewRegistryToolExecutor(registry)
+	toolTaskExecutor := NewToolTaskExecutor(registryExecutor)
+	graph := GraphDefinition{
+		Nodes: []Node{{
+			ID:       "A",
+			Name:     "node-A",
+			ToolName: "timeout",
+			Arguments: map[string]any{
+				"message": "hello",
+			},
+		}},
+	}
+	checkpointer := &RecordingCheckpointer{}
+
+	runtimeEngine := NewRuntime(
+		graph,
+		1,
+		&FakeScheduler{},
+		toolTaskExecutor,
+		&FakeTaskPolicy{},
+		&FakeCommitter{},
+		checkpointer,
+		&FakeDecision{},
+	)
+	finalSnapshot, err := runtimeEngine.runLoop(
+		ctx,
+		RuntimeSnapshot{
+			RuntimeID:     "runtime-timeout",
+			CompleteNodes: make(map[string]bool),
+			FailedNodes:   make(map[string]bool),
+			Status:        RuntimeRunning,
+		},
+	)
+	if err == nil {
+		t.Fatalf("runLoop succeeded unexpectedly")
+	}
+
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Fatalf("ctx.Err() = %#v, want DeadlineExceeded", ctx.Err())
+	}
+	//err != nil
+	//ctx.Err() == context.DeadlineExceeded
+	if finalSnapshot.Status != RuntimeFailed {
+		t.Fatalf("finalSnapshot = %#v, want RuntimeFailed", finalSnapshot.Status)
+	}
+	//finalSnapshot.Status == RuntimeFailed
+	if finalSnapshot.CompleteNodes["A"] {
+		t.Fatalf("finalSnapshot = %#v, want false", finalSnapshot.CompleteNodes["A"])
+	}
+	if !finalSnapshot.FailedNodes["A"] {
+		t.Fatalf(
+			"finalSnapshot = %#v, want true",
+			finalSnapshot.FailedNodes["A"],
+		)
+	}
+	//finalSnapshot.FailedNodes["A"] == true
+	//finalSnapshot.CompleteNodes["A"] == false
+	if checkpointer.SaveCount() != 1 {
+		t.Fatalf("checkpointer.SaveCount = %d, want 1", checkpointer.SaveCount())
+	}
+	//checkpointer.SaveCount() == 1
+	snapshots := checkpointer.Snapshots()
+	if !snapshots[0].FailedNodes["A"] {
+		t.Fatal("checkpoint did not persist node A failure")
+	}
+	//Checkpoint 中也记录了 FailedNodes["A"]
 }
