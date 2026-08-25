@@ -168,11 +168,15 @@ type Committer interface {
 type FakeCommitter struct {
 }
 
-//currentSnapshot
-//    ↓
-//BuildNextSnapshot
-//    ↓
-//candidate.Version = current.Version + 1
+// currentSnapshot
+//
+//	↓
+//
+// BuildNextSnapshot
+//
+//	↓
+//
+// candidate.Version = current.Version + 1
 
 func (fc *FakeCommitter) Commit(snapshot RuntimeSnapshot, outcomes []TaskOutcome) (RuntimeSnapshot, error) {
 	candidateSnapshot, err := fc.BuildNextSnapshot(snapshot)
@@ -208,7 +212,6 @@ type FakeCheckpointer struct {
 }
 
 func (f *FakeCheckpointer) Save(snapshot RuntimeSnapshot) error {
-
 	return nil
 }
 

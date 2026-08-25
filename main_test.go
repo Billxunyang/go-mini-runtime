@@ -1257,7 +1257,7 @@ func TestSaveFailedSnapshotPure(t *testing.T) {
 		t.Fatalf("finalSnapshot.Version = %d, want %d", finalSnapshot.Version, 1)
 	}
 	if finalSnapshot.CompleteNodes["A"] {
-		t.Fatalf("finalSnapshot  CompleteNodes must be empty")
+		t.Fatalf("finalSnapshot CompleteNodes must be empty")
 	}
 }
 
@@ -1270,4 +1270,103 @@ func (rC *FailedCheckpointer) Save(snapshot RuntimeSnapshot) error {
 
 func (rC *FailedCheckpointer) Load(runtimeId string) (RuntimeSnapshot, error) {
 	return RuntimeSnapshot{}, fmt.Errorf("load is not supported")
+}
+
+func TestSaveSnapshotCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	registry := NewMemoryToolRegistry()
+	tool := &SuccessTool{
+		definition: ToolDefinition{Name: "success"},
+		output:     "success",
+	}
+	if err := registry.Register(tool); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	registryExecutor := NewRegistryToolExecutor(registry)
+	toolTaskExecutor := NewToolTaskExecutor(registryExecutor)
+	graph := GraphDefinition{
+		Nodes: []Node{
+			{
+				ID:       "A",
+				Name:     "node-A",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+			{
+				ID:       "B",
+				Name:     "node-B",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+		},
+		Edges: []Edge{
+			{
+				From:   "A",
+				To:     "B",
+				NodeId: "B",
+			},
+		},
+	}
+	fc := RecordingCheckpointer{}
+	currentSnapshot := RuntimeSnapshot{
+		RuntimeID:     "runtime-success",
+		CompleteNodes: make(map[string]bool),
+		FailedNodes:   make(map[string]bool),
+		Status:        RuntimeRunning,
+		Version:       1,
+		SchemaVersion: CurrentSnapshotSchemaVersion,
+	}
+	currentSnapshot.CompleteNodes["A"] = true
+	fakeCommiter := FakeCommitter{}
+	runtimeEngine := NewRuntime(
+		graph,
+		1,
+		&FakeScheduler{},
+		toolTaskExecutor,
+		&FakeTaskPolicy{},
+		&fakeCommiter,
+		&fc,
+		&FakeDecision{},
+	)
+	finalSnapshot, err := runtimeEngine.runLoop(
+		ctx,
+		currentSnapshot,
+	)
+	if err != nil {
+		t.Fatalf("runloop err:%v", err)
+	}
+	if finalSnapshot.Version != 2 {
+		t.Fatalf("finalSnapshot.Version = %d, want %d", finalSnapshot.Version, 2)
+	}
+
+	if !currentSnapshot.CompleteNodes["A"] {
+		t.Fatalf("init current snapshot node A must be complete")
+	}
+	if currentSnapshot.CompleteNodes["B"] {
+		t.Fatalf("init current snapshot node B must be empty")
+	}
+	if !finalSnapshot.CompleteNodes["A"] {
+		t.Fatalf("snapshot node A must be complete")
+	}
+	if !finalSnapshot.CompleteNodes["B"] {
+		t.Fatalf("snapshot node B must be complete")
+	}
+	finalSnapshot.CompleteNodes["C"] = true
+	reloadSnapshot, err := fc.Load(currentSnapshot.RuntimeID)
+	if err != nil {
+		t.Fatalf("load snapshot failed: %v", err)
+	}
+	if !reloadSnapshot.CompleteNodes["A"] {
+		t.Fatalf("snapshot node A must be complete")
+	}
+	if !reloadSnapshot.CompleteNodes["B"] {
+		t.Fatalf("snapshot node B must be complete")
+	}
+	if reloadSnapshot.CompleteNodes["C"] {
+		t.Fatalf("snapshot  node C must be empty")
+	}
 }
