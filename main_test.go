@@ -1165,3 +1165,109 @@ func TestRuntimeRecordsToolTimeoutAsFailure(t *testing.T) {
 	}
 	//Checkpoint 中也记录了 FailedNodes["A"]
 }
+
+func TestCandidateSnapshot(t *testing.T) {
+	currentSnapshot := RuntimeSnapshot{
+		RuntimeID:     "runtime-timeout",
+		CompleteNodes: make(map[string]bool),
+		FailedNodes:   make(map[string]bool),
+		Status:        RuntimeRunning,
+		Version:       1,
+		SchemaVersion: CurrentSnapshotSchemaVersion,
+	}
+	currentSnapshot.Version = 1
+	outcomes := []TaskOutcome{
+		{NodeID: "A", Success: true},
+	}
+	fakeCommiter := FakeCommitter{}
+	candidate, err := fakeCommiter.Commit(currentSnapshot, outcomes)
+	if err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	if currentSnapshot.Version != 1 {
+		t.Fatalf("current snapshot version must be 1")
+	}
+	if currentSnapshot.CompleteNodes["A"] {
+		t.Fatalf("current snapshot CompleteNodes must be empty")
+	}
+	if candidate.Version != 2 {
+		t.Fatalf("candidate snapshot version must be 2")
+	}
+	if !candidate.CompleteNodes["A"] {
+		t.Fatalf("candidate snapshot CompleteNodes must contain node A")
+	}
+	if candidate.SchemaVersion != CurrentSnapshotSchemaVersion {
+		t.Fatalf("unexpected schema version: %d", candidate.SchemaVersion)
+	}
+}
+
+func TestSaveFailedSnapshotPure(t *testing.T) {
+	ctx := context.Background()
+	registry := NewMemoryToolRegistry()
+	tool := &SuccessTool{
+		definition: ToolDefinition{Name: "success"},
+		output:     "success",
+	}
+	if err := registry.Register(tool); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	registryExecutor := NewRegistryToolExecutor(registry)
+	toolTaskExecutor := NewToolTaskExecutor(registryExecutor)
+	graph := GraphDefinition{
+		Nodes: []Node{
+			{
+				ID:       "A",
+				Name:     "node-A",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+		},
+	}
+	fc := FailedCheckpointer{}
+	currentSnapshot := RuntimeSnapshot{
+		RuntimeID:     "runtime-success",
+		CompleteNodes: make(map[string]bool),
+		FailedNodes:   make(map[string]bool),
+		Status:        RuntimeRunning,
+		Version:       1,
+		SchemaVersion: CurrentSnapshotSchemaVersion,
+	}
+	fakeCommiter := FakeCommitter{}
+	runtimeEngine := NewRuntime(
+		graph,
+		1,
+		&FakeScheduler{},
+		toolTaskExecutor,
+		&FakeTaskPolicy{},
+		&fakeCommiter,
+		&fc,
+		&FakeDecision{},
+	)
+	finalSnapshot, err := runtimeEngine.runLoop(
+		ctx,
+		currentSnapshot,
+	)
+	if err == nil {
+		t.Fatalf("runLoop succeeded unexpectedly")
+	}
+	if finalSnapshot.Version != 1 {
+		t.Fatalf("finalSnapshot.Version = %d, want %d", finalSnapshot.Version, 1)
+	}
+	if finalSnapshot.CompleteNodes["A"] {
+		t.Fatalf("finalSnapshot  CompleteNodes must be empty")
+	}
+}
+
+type FailedCheckpointer struct {
+}
+
+func (rC *FailedCheckpointer) Save(snapshot RuntimeSnapshot) error {
+	return fmt.Errorf("failed to save")
+}
+
+func (rC *FailedCheckpointer) Load(runtimeId string) (RuntimeSnapshot, error) {
+	return RuntimeSnapshot{}, fmt.Errorf("load is not supported")
+}

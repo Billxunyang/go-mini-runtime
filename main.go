@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 )
@@ -29,6 +30,8 @@ type Edge struct {
 	NodeId string
 }
 
+const CurrentSnapshotSchemaVersion uint32 = 1
+
 type RuntimeSnapshot struct {
 	// Runtime snapshot
 	// TODO: define runtime snapshot
@@ -36,6 +39,12 @@ type RuntimeSnapshot struct {
 	CompleteNodes map[string]bool
 	Status        RuntimeStatus
 	FailedNodes   map[string]bool
+	// Version identifies a committed and persisted snapshot revision
+	// within the same RuntimeID. A version is recoverable once persistence succeeds.
+	Version uint64
+	// SchemaVersion identifies the schema used to interpret this snapshot.
+	// It changes only when the RuntimeSnapshot data contract evolves.
+	SchemaVersion uint32
 }
 
 type Task struct {
@@ -159,22 +168,47 @@ type Committer interface {
 type FakeCommitter struct {
 }
 
+//currentSnapshot
+//    ↓
+//BuildNextSnapshot
+//    ↓
+//candidate.Version = current.Version + 1
+
 func (fc *FakeCommitter) Commit(snapshot RuntimeSnapshot, outcomes []TaskOutcome) (RuntimeSnapshot, error) {
+	candidateSnapshot, err := fc.BuildNextSnapshot(snapshot)
+	if err != nil {
+		return candidateSnapshot, err
+	}
+
 	for _, outcome := range outcomes {
 		if outcome.Success {
-			snapshot.CompleteNodes[outcome.NodeID] = true
-			delete(snapshot.FailedNodes, outcome.NodeID)
+			candidateSnapshot.CompleteNodes[outcome.NodeID] = true
+			delete(candidateSnapshot.FailedNodes, outcome.NodeID)
 			continue
 		}
-		snapshot.FailedNodes[outcome.NodeID] = true
+		candidateSnapshot.FailedNodes[outcome.NodeID] = true
 	}
-	return snapshot, nil
+
+	return candidateSnapshot, nil
+}
+
+func (fc *FakeCommitter) BuildNextSnapshot(snapshot RuntimeSnapshot) (RuntimeSnapshot, error) {
+	candidate := snapshot
+
+	candidate.CompleteNodes = maps.Clone(snapshot.CompleteNodes)
+	candidate.FailedNodes = maps.Clone(snapshot.FailedNodes)
+
+	candidate.Version = snapshot.Version + 1
+	candidate.SchemaVersion = CurrentSnapshotSchemaVersion
+
+	return candidate, nil
 }
 
 type FakeCheckpointer struct {
 }
 
 func (f *FakeCheckpointer) Save(snapshot RuntimeSnapshot) error {
+
 	return nil
 }
 
@@ -183,6 +217,7 @@ func (f *FakeCheckpointer) Load(runtimeId string) (RuntimeSnapshot, error) {
 		RuntimeID:     runtimeId,
 		CompleteNodes: make(map[string]bool),
 		FailedNodes:   make(map[string]bool),
+		SchemaVersion: CurrentSnapshotSchemaVersion,
 	}, nil
 }
 
@@ -293,6 +328,7 @@ func (r *Runtime) runLoop(ctx context.Context, snapshot RuntimeSnapshot) (newSna
 	r.startWorker(ctx)
 	needContinue := false
 	newSnapshot = snapshot
+	candidateSnapshot := RuntimeSnapshot{}
 	for {
 		taskSet, err = r.scheduler.Schedule(r.graph, newSnapshot)
 		if err != nil {
@@ -308,16 +344,17 @@ func (r *Runtime) runLoop(ctx context.Context, snapshot RuntimeSnapshot) (newSna
 			}
 		}
 		taskOutcomes := r.executeReadyTasks(taskSet)
-		newSnapshot, err = r.committer.Commit(newSnapshot, taskOutcomes)
+		candidateSnapshot, err = r.committer.Commit(newSnapshot, taskOutcomes)
 		if err != nil {
 			fmt.Println("commit err ", err)
 			return
 		}
-		err = r.checkpointer.Save(newSnapshot)
+		err = r.checkpointer.Save(candidateSnapshot)
 		if err != nil {
 			fmt.Println("checkpointer err ", err)
 			return
 		}
+		newSnapshot = candidateSnapshot
 		needContinue, err = r.decideLoop(&newSnapshot)
 		if needContinue {
 			continue
@@ -453,6 +490,8 @@ func main() {
 		CompleteNodes: make(map[string]bool),
 		FailedNodes:   make(map[string]bool),
 		Status:        RuntimeRunning,
+		Version:       0,
+		SchemaVersion: CurrentSnapshotSchemaVersion,
 	}
 	newSnapshot, err := runtime.runLoop(ctx, snapshot)
 	if err != nil {
