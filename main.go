@@ -720,6 +720,7 @@ var (
 	ErrInvalidToolName       = errors.New("invalid tool name")
 	ErrToolAlreadyRegistered = errors.New("tool already registered")
 	ErrToolNotFound          = errors.New("tool not found")
+	ErrRuntimeFailed         = errors.New("runtime failed")
 )
 
 type RegistryToolExecutor struct {
@@ -791,4 +792,17 @@ func (e *ExecutionError) Error() string {
 		e.ErrCode,
 		e.ErrMsg,
 	)
+}
+
+// Recovery from checkpoint
+func (r *Runtime) Recovery(ctx context.Context, runtimeID string) (RuntimeSnapshot, error) {
+	snapshot, err := r.checkpointer.Load(runtimeID)
+	if err != nil {
+		return snapshot, err
+	}
+	if snapshot.Status == RuntimeFailed {
+		return snapshot, ErrRuntimeFailed
+	}
+	snapshot, err = r.runLoop(ctx, snapshot)
+	return snapshot, err
 }

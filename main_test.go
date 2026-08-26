@@ -1370,3 +1370,115 @@ func TestSaveSnapshotCheckpoint(t *testing.T) {
 		t.Fatalf("snapshot  node C must be empty")
 	}
 }
+
+func TestRecoverySkipsCompletedNode(t *testing.T) {
+	runtimeID := "test-runtime-abc"
+	ctx := context.Background()
+	recordExecutor := &RecordingExecutor{}
+	graph := GraphDefinition{
+		Nodes: []Node{
+			{
+				ID:       "A",
+				Name:     "node-A",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+			{
+				ID:       "B",
+				Name:     "node-B",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+			{
+				ID:       "C",
+				Name:     "node-C",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+		},
+		Edges: []Edge{
+			{
+				From:   "A",
+				To:     "B",
+				NodeId: "B",
+			},
+			{
+				From:   "B",
+				To:     "C",
+				NodeId: "C",
+			},
+		},
+	}
+	recordCheckpointer := RecordingCheckpointer{
+		recordSnapshots: []RuntimeSnapshot{
+			{
+				RuntimeID: runtimeID,
+				CompleteNodes: map[string]bool{
+					"A": true,
+				},
+				FailedNodes:   make(map[string]bool),
+				Status:        RuntimeRunning,
+				Version:       2,
+				SchemaVersion: CurrentSnapshotSchemaVersion,
+			},
+		},
+	}
+	fakeCommiter := FakeCommitter{}
+	runtimeEngine := NewRuntime(
+		graph,
+		1,
+		&FakeScheduler{},
+		recordExecutor,
+		&FakeTaskPolicy{},
+		&fakeCommiter,
+		&recordCheckpointer,
+		&FakeDecision{},
+	)
+	currentSnapshot, err := runtimeEngine.Recovery(ctx, runtimeID)
+	if err != nil {
+		t.Fatalf("recovery run failed %v", err)
+	}
+	//恢复后的执行记录严格为 ["B", "C"]；
+	//最终状态为 RuntimeSuccess；
+	//Snapshot 版本依次为 2, 3, 4；
+	//CompleteNodes 依次为 A、A+B、A+B+C。
+	gotExecuted := recordExecutor.ExecutedNodes()
+	wantExecuted := []string{"B", "C"}
+	if !reflect.DeepEqual(gotExecuted, wantExecuted) {
+		t.Fatalf("executed nodes = %v, want %v", gotExecuted, wantExecuted)
+	}
+	if currentSnapshot.Status != RuntimeSuccess {
+		t.Fatalf("final snapshot runtime status must be success,but got %v", currentSnapshot.Status)
+	}
+	if currentSnapshot.Version != 4 {
+		t.Fatalf("final version must be 4, but got %d", currentSnapshot.Version)
+	}
+	if !currentSnapshot.CompleteNodes["A"] || !currentSnapshot.CompleteNodes["B"] || !currentSnapshot.CompleteNodes["C"] {
+		t.Fatalf("final complete node must be  a,b,c but got %v", currentSnapshot.CompleteNodes)
+	}
+	expectVersion := []uint64{2, 3, 4}
+	expectRecord := []map[string]bool{
+		{"A": true},
+		{"A": true, "B": true},
+		{"A": true, "B": true, "C": true},
+	}
+	snapshots := recordCheckpointer.Snapshots()
+	if len(snapshots) != 3 {
+		t.Fatalf("record checkpoint len must be 3,but got %d", len(snapshots))
+	}
+	for i, snapshot := range snapshots {
+		if expectVersion[i] != snapshot.Version {
+			t.Fatalf("current version must be %d but %d", expectVersion[i], snapshot.Version)
+		}
+		if !reflect.DeepEqual(snapshot.CompleteNodes, expectRecord[i]) {
+			t.Fatalf("current complete nodes must be %v but %v", expectRecord[i], snapshot.CompleteNodes)
+		}
+	}
+
+}
