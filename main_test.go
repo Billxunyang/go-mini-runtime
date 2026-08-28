@@ -520,11 +520,11 @@ func (fT *FakeTool) Execute(ctx context.Context, invocation Invocation) Executio
 	return ExecutionResult{}
 }
 
-type SpyScheduler struct {
+type UnexpectedCallScheduler struct {
 	callCount int
 }
 
-func (s *SpyScheduler) Schedule(
+func (s *UnexpectedCallScheduler) Schedule(
 	graph GraphDefinition,
 	snapshot RuntimeSnapshot,
 ) (ReadyTaskSet, error) {
@@ -563,7 +563,7 @@ func TestRuntimeRejectsInvalidGraphBeforeStartingWorkers(t *testing.T) {
 		Nodes: []Node{{ID: "A", Name: "A"}},
 		Edges: []Edge{{From: "A", To: "A"}},
 	}
-	scheduler := &SpyScheduler{}
+	scheduler := &UnexpectedCallScheduler{}
 
 	runtimeInstance := NewRuntime(
 		graph,
@@ -1481,4 +1481,185 @@ func TestRecoverySkipsCompletedNode(t *testing.T) {
 		}
 	}
 
+}
+
+func TestRecoveryReturnsLoadErrorWithoutRunning(t *testing.T) {
+	runtimeID := "load-error"
+	ctx := context.Background()
+	recordExecutor := &RecordingExecutor{}
+	graph := GraphDefinition{
+		Nodes: []Node{
+			{
+				ID:       "A",
+				Name:     "node-A",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+			{
+				ID:       "B",
+				Name:     "node-B",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+			{
+				ID:       "C",
+				Name:     "node-C",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+		},
+		Edges: []Edge{
+			{
+				From:   "A",
+				To:     "B",
+				NodeId: "B",
+			},
+			{
+				From:   "B",
+				To:     "C",
+				NodeId: "C",
+			},
+		},
+	}
+	errLoadFailed := errors.New("load failed")
+
+	checkpointer := &LoadErrorCheckpointer{
+		loadSnapshot: RuntimeSnapshot{
+			RuntimeID: "load-failed",
+			Version:   1,
+		},
+		loadErr: errLoadFailed,
+	}
+	fakeCommiter := FakeCommitter{}
+	unexpectedScheduler := UnexpectedCallScheduler{}
+	runtimeEngine := NewRuntime(
+		graph,
+		1,
+		&unexpectedScheduler,
+		recordExecutor,
+		&FakeTaskPolicy{},
+		&fakeCommiter,
+		checkpointer,
+		&FakeDecision{},
+	)
+	currentSnapshot, err := runtimeEngine.Recovery(ctx, runtimeID)
+	if err == nil {
+		t.Fatalf("recovery run must be not nil")
+	}
+	if !errors.Is(err, errLoadFailed) {
+		t.Fatalf("err must be errLoadFailed but get :%v", err)
+	}
+	if !reflect.DeepEqual(currentSnapshot, checkpointer.loadSnapshot) {
+		t.Fatalf("snapshot must equal check point  got :%v expect :%v", currentSnapshot, checkpointer.loadSnapshot)
+	}
+	if unexpectedScheduler.callCount != 0 {
+		t.Fatalf("call count must be 0 but got :%d", unexpectedScheduler.callCount)
+	}
+	if checkpointer.saveCallCount != 0 {
+		t.Fatalf("save count must be 0 but got :%d", checkpointer.saveCallCount)
+	}
+}
+
+type LoadErrorCheckpointer struct {
+	saveCallCount uint64
+	loadErr       error
+	loadSnapshot  RuntimeSnapshot
+}
+
+func (l *LoadErrorCheckpointer) Save(snapshot RuntimeSnapshot) error {
+	l.saveCallCount++
+	return nil
+}
+
+func (l *LoadErrorCheckpointer) Load(runtimeID string) (RuntimeSnapshot, error) {
+	return l.loadSnapshot, l.loadErr
+}
+
+func TestRecoveryReturnsRuntimeFailedWithoutRunning(t *testing.T) {
+	runtimeID := "Runtime-failed"
+	ctx := context.Background()
+	recordExecutor := &RecordingExecutor{}
+	graph := GraphDefinition{
+		Nodes: []Node{
+			{
+				ID:       "A",
+				Name:     "node-A",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+			{
+				ID:       "B",
+				Name:     "node-B",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+			{
+				ID:       "C",
+				Name:     "node-C",
+				ToolName: "success",
+				Arguments: map[string]any{
+					"message": "hello",
+				},
+			},
+		},
+		Edges: []Edge{
+			{
+				From:   "A",
+				To:     "B",
+				NodeId: "B",
+			},
+			{
+				From:   "B",
+				To:     "C",
+				NodeId: "C",
+			},
+		},
+	}
+	checkpointer := &LoadErrorCheckpointer{
+		loadSnapshot: RuntimeSnapshot{
+			RuntimeID:     runtimeID,
+			Status:        RuntimeFailed,
+			Version:       1,
+			SchemaVersion: CurrentSnapshotSchemaVersion,
+		},
+		loadErr: nil,
+	}
+	fakeCommiter := FakeCommitter{}
+	unexpectedScheduler := UnexpectedCallScheduler{}
+	runtimeEngine := NewRuntime(
+		graph,
+		1,
+		&unexpectedScheduler,
+		recordExecutor,
+		&FakeTaskPolicy{},
+		&fakeCommiter,
+		checkpointer,
+		&FakeDecision{},
+	)
+	currentSnapshot, err := runtimeEngine.Recovery(ctx, runtimeID)
+	if err == nil {
+		t.Fatalf("recovery run err must be not nil")
+	}
+	if !errors.Is(err, ErrRuntimeFailed) {
+		t.Fatalf("err must be errRuntimeFailed but get :%v", err)
+	}
+	if !reflect.DeepEqual(currentSnapshot, checkpointer.loadSnapshot) {
+		t.Fatalf("snapshot must equal check point  got :%v expect :%v", currentSnapshot, checkpointer.loadSnapshot)
+	}
+	if unexpectedScheduler.callCount != 0 {
+		t.Fatalf("call count must be 0 but got :%d", unexpectedScheduler.callCount)
+	}
+	if checkpointer.saveCallCount != 0 {
+		t.Fatalf("save count must be 0 but got :%d", checkpointer.saveCallCount)
+	}
 }
