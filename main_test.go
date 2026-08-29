@@ -1883,3 +1883,143 @@ func TestExecuteReadyTasksKeepsTaskContext(t *testing.T) {
 		}
 	}
 }
+
+func validHotelSearchCriteria() *HotelSearchCriteria {
+	return &HotelSearchCriteria{
+		City:               "上海",
+		CheckInDate:        "2026-09-01",
+		CheckOutDate:       "2026-09-03",
+		MinPricePerNight:   500,
+		MaxPricePerNight:   800,
+		Currency:           "RMB",
+		RequireAvailable:   true,
+		RequireBreakfast:   true,
+		MaxSubwayDistanceM: 800,
+	}
+}
+
+func TestHotelSearchCriteriaValidate(t *testing.T) {
+	tests := []struct {
+		name     string
+		criteria func() *HotelSearchCriteria
+		wantErr  bool
+	}{
+		{
+			name: "valid criteria",
+			criteria: func() *HotelSearchCriteria {
+				return validHotelSearchCriteria()
+			},
+			wantErr: false,
+		},
+		{
+			name: "nil criteria",
+			criteria: func() *HotelSearchCriteria {
+				return nil
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty city",
+			criteria: func() *HotelSearchCriteria {
+				criteria := validHotelSearchCriteria()
+				criteria.City = ""
+				return criteria
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty check-in date",
+			criteria: func() *HotelSearchCriteria {
+				criteria := validHotelSearchCriteria()
+				criteria.CheckInDate = ""
+				return criteria
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty check-out date",
+			criteria: func() *HotelSearchCriteria {
+				criteria := validHotelSearchCriteria()
+				criteria.CheckOutDate = ""
+				return criteria
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid check-in date",
+			criteria: func() *HotelSearchCriteria {
+				criteria := validHotelSearchCriteria()
+				criteria.CheckInDate = "invalid-date"
+				return criteria
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid check-out date",
+			criteria: func() *HotelSearchCriteria {
+				criteria := validHotelSearchCriteria()
+				criteria.CheckOutDate = "invalid-date"
+				return criteria
+			},
+			wantErr: true,
+		},
+		{
+			name: "check-in date is not before check-out date",
+			criteria: func() *HotelSearchCriteria {
+				criteria := validHotelSearchCriteria()
+				criteria.CheckInDate = criteria.CheckOutDate
+				return criteria
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative minimum price",
+			criteria: func() *HotelSearchCriteria {
+				criteria := validHotelSearchCriteria()
+				criteria.MinPricePerNight = -1
+				return criteria
+			},
+			wantErr: true,
+		},
+		{
+			name: "maximum price below minimum price",
+			criteria: func() *HotelSearchCriteria {
+				criteria := validHotelSearchCriteria()
+				criteria.MaxPricePerNight = criteria.MinPricePerNight - 1
+				return criteria
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty currency",
+			criteria: func() *HotelSearchCriteria {
+				criteria := validHotelSearchCriteria()
+				criteria.Currency = ""
+				return criteria
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative subway distance",
+			criteria: func() *HotelSearchCriteria {
+				criteria := validHotelSearchCriteria()
+				criteria.MaxSubwayDistanceM = -1
+				return criteria
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.criteria().Validate()
+			if gotErr := err != nil; gotErr != tt.wantErr {
+				t.Fatalf(
+					"Validate() error = %v, wantErr = %v",
+					err,
+					tt.wantErr,
+				)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type GraphDefinition struct {
@@ -808,4 +809,71 @@ func (r *Runtime) Recovery(ctx context.Context, runtimeID string) (RuntimeSnapsh
 	}
 	snapshot, err = r.runLoop(ctx, snapshot)
 	return snapshot, err
+}
+
+type HotelSearchCriteria struct {
+	City               string
+	CheckInDate        string
+	CheckOutDate       string
+	MinPricePerNight   int
+	MaxPricePerNight   int
+	Currency           string
+	RequireAvailable   bool
+	RequireBreakfast   bool
+	MaxSubwayDistanceM int
+}
+
+type HotelSearchOutput struct {
+	City            string
+	HotelName       string
+	CheckInDate     string
+	CheckOutDate    string
+	PricePerNight   int
+	Currency        string
+	Available       bool
+	Breakfast       bool
+	SubwayDistanceM int
+}
+
+func (h *HotelSearchCriteria) Validate() error {
+	if h == nil {
+		return errors.New("criteria is required")
+	}
+	if h.City == "" {
+		return errors.New("city is required")
+	}
+	if h.CheckInDate == "" {
+		return errors.New("check-in date is required")
+	}
+	if h.CheckOutDate == "" {
+		return errors.New("check-out date is required")
+	}
+
+	checkIn, err := time.Parse("2006-01-02", h.CheckInDate)
+	if err != nil {
+		return fmt.Errorf("invalid check-in date: %w", err)
+	}
+
+	checkOut, err := time.Parse("2006-01-02", h.CheckOutDate)
+	if err != nil {
+		return fmt.Errorf("invalid check-out date: %w", err)
+	}
+
+	if !checkIn.Before(checkOut) {
+		return errors.New("check-in date must be before check-out date")
+	}
+	if h.MinPricePerNight < 0 {
+		return errors.New("minimum price cannot be negative")
+	}
+	if h.MaxPricePerNight < h.MinPricePerNight {
+		return errors.New("maximum price cannot be lower than minimum price")
+	}
+	if h.Currency == "" {
+		return errors.New("currency is required")
+	}
+	if h.MaxSubwayDistanceM < 0 {
+		return errors.New("subway distance cannot be negative")
+	}
+
+	return nil
 }
