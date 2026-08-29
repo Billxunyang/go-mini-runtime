@@ -22,6 +22,7 @@ type Node struct {
 	Name      string
 	ToolName  string
 	Arguments map[string]any
+	Criteria  EvaluationCriteria
 }
 
 type Edge struct {
@@ -53,8 +54,11 @@ type Task struct {
 	NodeID    string
 	ToolName  string
 	Arguments map[string]any
+	Criteria  EvaluationCriteria
 }
-
+type EvaluationCriteria interface {
+	Validate() error
+}
 type ReadyTaskSet struct {
 	// Ready task set
 	// TODO: define ready task set
@@ -99,6 +103,7 @@ func (s *FakeScheduler) Schedule(graph GraphDefinition, snapshot RuntimeSnapshot
 				NodeID:    node.ID,
 				ToolName:  node.ToolName,
 				Arguments: node.Arguments,
+				Criteria:  node.Criteria,
 			})
 		}
 	}

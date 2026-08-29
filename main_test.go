@@ -1686,6 +1686,7 @@ func TestToolTaskExecutorCarriesTaskContext(t *testing.T) {
 			"minPrice": 500,
 			"maxPrice": 800,
 		},
+		Criteria: &FakeCriteria{},
 	}
 
 	got := executor.Execute(context.Background(), task)
@@ -1702,6 +1703,9 @@ func TestToolTaskExecutorCarriesTaskContext(t *testing.T) {
 			got.Task.Arguments,
 			task.Arguments,
 		)
+	}
+	if got.Task.Criteria != task.Criteria {
+		t.Fatalf("Criteria = %v, want %v", got.Task.Criteria, task.Criteria)
 	}
 }
 
@@ -1732,47 +1736,28 @@ func (p *RecordingTaskPolicy) Tasks() []Task {
 	return tasks
 }
 
+type FakeCriteria struct {
+	Name string
+}
+
+func (f *FakeCriteria) Validate() error {
+	return nil
+}
+
 func TestExecuteReadyTasksKeepsTaskContext(t *testing.T) {
 	recordExecutor := &RecordingExecutor{}
 	recordTaskPolicy := &RecordingTaskPolicy{}
-
-	runtimeEngine := &Runtime{
-		executor:   recordExecutor,
-		taskPolicy: recordTaskPolicy,
-		workerNum:  2,
-	}
-
-	runtimeEngine.initWorker(runtimeEngine.workerNum)
-	runtimeEngine.startWorker(context.Background())
-	defer runtimeEngine.stopWorker()
-	readyTaskSet := ReadyTaskSet{}
-	readyTaskSet.Tasks = []Task{
-		{
-			NodeID:   "A",
-			ToolName: "hotel-search",
-			Arguments: map[string]any{
-				"city": "上海",
-			},
-		},
-		{
-			NodeID:   "B",
-			ToolName: "weather-search",
-			Arguments: map[string]any{
-				"city": "北京",
-			},
-		},
-	}
-	outcomes := runtimeEngine.executeReadyTasks(readyTaskSet)
-
-	if got, want := len(outcomes), len(readyTaskSet.Tasks); got != want {
-		t.Fatalf("outcome count = %d, want %d", got, want)
-	}
+	fakeScheduler := &FakeScheduler{}
+	//
 	expectedByNodeID := map[string]Task{
 		"A": {
 			NodeID:   "A",
 			ToolName: "hotel-search",
 			Arguments: map[string]any{
 				"city": "上海",
+			},
+			Criteria: &FakeCriteria{
+				Name: "上海",
 			},
 		},
 		"B": {
@@ -1781,7 +1766,84 @@ func TestExecuteReadyTasksKeepsTaskContext(t *testing.T) {
 			Arguments: map[string]any{
 				"city": "北京",
 			},
+			Criteria: &FakeCriteria{
+				Name: "北京",
+			},
 		},
+	}
+	runtimeEngine := &Runtime{
+		graph: GraphDefinition{
+			Nodes: []Node{
+				{
+					ID:       "A",
+					Name:     "node-hotel",
+					ToolName: "hotel-search",
+					Arguments: map[string]any{
+						"city": "上海",
+					},
+					Criteria: &FakeCriteria{
+						Name: "上海",
+					},
+				},
+				{
+					ID:       "B",
+					Name:     "node-hotel",
+					ToolName: "weather-search",
+					Arguments: map[string]any{
+						"city": "北京",
+					},
+					Criteria: &FakeCriteria{
+						Name: "北京",
+					},
+				},
+			},
+		},
+		executor:   recordExecutor,
+		taskPolicy: recordTaskPolicy,
+		scheduler:  fakeScheduler,
+		workerNum:  2,
+	}
+
+	runtimeEngine.initWorker(runtimeEngine.workerNum)
+	runtimeEngine.startWorker(context.Background())
+	defer runtimeEngine.stopWorker()
+	readyTaskSet, err := runtimeEngine.scheduler.Schedule(runtimeEngine.graph, RuntimeSnapshot{
+		RuntimeID:     "keep-task-ctx",
+		CompleteNodes: map[string]bool{},
+		Status:        RuntimeRunning,
+		FailedNodes:   make(map[string]bool),
+		Version:       0,
+		SchemaVersion: 0,
+	})
+	if err != nil {
+		t.Fatalf("scheduler schedule err: %v", err)
+	}
+	seenReady := make(map[string]bool)
+
+	for _, task := range readyTaskSet.Tasks {
+		wantTask, ok := expectedByNodeID[task.NodeID]
+		if !ok {
+			t.Fatalf("scheduler returned unexpected task NodeID = %q", task.NodeID)
+		}
+		if seenReady[task.NodeID] {
+			t.Fatalf("scheduler returned duplicate task NodeID = %q", task.NodeID)
+		}
+		seenReady[task.NodeID] = true
+		if !reflect.DeepEqual(task.Criteria, wantTask.Criteria) {
+			t.Fatalf(
+				"scheduler task %q Criteria = %#v, want %#v",
+				task.NodeID,
+				task.Criteria,
+				wantTask.Criteria,
+			)
+		}
+
+	}
+
+	outcomes := runtimeEngine.executeReadyTasks(readyTaskSet)
+
+	if got, want := len(outcomes), len(readyTaskSet.Tasks); got != want {
+		t.Fatalf("outcome count = %d, want %d", got, want)
 	}
 	seen := make(map[string]bool)
 	recordedTasks := recordTaskPolicy.Tasks()
@@ -1800,7 +1862,7 @@ func TestExecuteReadyTasksKeepsTaskContext(t *testing.T) {
 		seen[gotTask.NodeID] = true
 
 		if gotTask.ToolName != wantTask.ToolName {
-			t.Errorf(
+			t.Fatalf(
 				"task %q ToolName = %q, want %q",
 				gotTask.NodeID,
 				gotTask.ToolName,
@@ -1809,12 +1871,15 @@ func TestExecuteReadyTasksKeepsTaskContext(t *testing.T) {
 		}
 
 		if !reflect.DeepEqual(gotTask.Arguments, wantTask.Arguments) {
-			t.Errorf(
+			t.Fatalf(
 				"task %q Arguments = %#v, want %#v",
 				gotTask.NodeID,
 				gotTask.Arguments,
 				wantTask.Arguments,
 			)
+		}
+		if !reflect.DeepEqual(gotTask.Criteria, wantTask.Criteria) {
+			t.Fatalf("task %q Criteria = %v, want %v", gotTask.NodeID, gotTask.Criteria, wantTask.Criteria)
 		}
 	}
 }
