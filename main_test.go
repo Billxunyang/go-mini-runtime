@@ -29,7 +29,7 @@ func (r *RecordingExecutor) Execute(ctx context.Context, task Task) TaskResult {
 	defer r.mu.Unlock()
 
 	r.recordIDs = append(r.recordIDs, task.NodeID)
-	return TaskResult{NodeID: task.NodeID}
+	return TaskResult{Task: task}
 }
 
 // ExecutedNodes() []string
@@ -936,8 +936,8 @@ func TestToolTaskExecutorExecuteSuccess(t *testing.T) {
 	//result.ExecutionResult.InvocationID == "node-A-1"
 	//result.ExecutionResult.Output == SuccessTool预期输出
 	//result.ExecutionResult.Err == nil
-	if result.NodeID != "node-A" {
-		t.Fatalf("task ID = %q, want node-A", result.NodeID)
+	if result.Task.NodeID != "node-A" {
+		t.Fatalf("task ID = %q, want node-A", result.Task.NodeID)
 	}
 	if result.ExecutionResult.InvocationID != "node-A-1" {
 		t.Fatalf("invocation ID = %q, want node-A-1", result.ExecutionResult.InvocationID)
@@ -1661,5 +1661,160 @@ func TestRecoveryReturnsRuntimeFailedWithoutRunning(t *testing.T) {
 	}
 	if checkpointer.saveCallCount != 0 {
 		t.Fatalf("save count must be 0 but got :%d", checkpointer.saveCallCount)
+	}
+}
+func TestToolTaskExecutorCarriesTaskContext(t *testing.T) {
+	registry := NewMemoryToolRegistry()
+
+	tool := &SuccessTool{
+		definition: ToolDefinition{Name: "hotel-search"},
+		output:     "hotel-result",
+	}
+	if err := registry.Register(tool); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	executor := NewToolTaskExecutor(
+		NewRegistryToolExecutor(registry),
+	)
+
+	task := Task{
+		NodeID:   "node-hotel",
+		ToolName: "hotel-search",
+		Arguments: map[string]any{
+			"city":     "上海",
+			"minPrice": 500,
+			"maxPrice": 800,
+		},
+	}
+
+	got := executor.Execute(context.Background(), task)
+
+	if got.Task.NodeID != task.NodeID {
+		t.Fatalf("NodeID = %q, want %q", got.Task.NodeID, task.NodeID)
+	}
+	if got.Task.ToolName != task.ToolName {
+		t.Fatalf("ToolName = %q, want %q", got.Task.ToolName, task.ToolName)
+	}
+	if !reflect.DeepEqual(got.Task.Arguments, task.Arguments) {
+		t.Fatalf(
+			"Arguments = %#v, want %#v",
+			got.Task.Arguments,
+			task.Arguments,
+		)
+	}
+}
+
+type RecordingTaskPolicy struct {
+	mu    sync.Mutex
+	tasks []Task
+}
+
+func (p *RecordingTaskPolicy) Evaluate(
+	result TaskResult,
+) TaskOutcome {
+	p.mu.Lock()
+	p.tasks = append(p.tasks, result.Task)
+	p.mu.Unlock()
+
+	return TaskOutcome{
+		NodeID:  result.Task.NodeID,
+		Success: true,
+	}
+}
+
+func (p *RecordingTaskPolicy) Tasks() []Task {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	tasks := make([]Task, len(p.tasks))
+	copy(tasks, p.tasks)
+	return tasks
+}
+
+func TestExecuteReadyTasksKeepsTaskContext(t *testing.T) {
+	recordExecutor := &RecordingExecutor{}
+	recordTaskPolicy := &RecordingTaskPolicy{}
+
+	runtimeEngine := &Runtime{
+		executor:   recordExecutor,
+		taskPolicy: recordTaskPolicy,
+		workerNum:  2,
+	}
+
+	runtimeEngine.initWorker(runtimeEngine.workerNum)
+	runtimeEngine.startWorker(context.Background())
+	defer runtimeEngine.stopWorker()
+	readyTaskSet := ReadyTaskSet{}
+	readyTaskSet.Tasks = []Task{
+		{
+			NodeID:   "A",
+			ToolName: "hotel-search",
+			Arguments: map[string]any{
+				"city": "上海",
+			},
+		},
+		{
+			NodeID:   "B",
+			ToolName: "weather-search",
+			Arguments: map[string]any{
+				"city": "北京",
+			},
+		},
+	}
+	outcomes := runtimeEngine.executeReadyTasks(readyTaskSet)
+
+	if got, want := len(outcomes), len(readyTaskSet.Tasks); got != want {
+		t.Fatalf("outcome count = %d, want %d", got, want)
+	}
+	expectedByNodeID := map[string]Task{
+		"A": {
+			NodeID:   "A",
+			ToolName: "hotel-search",
+			Arguments: map[string]any{
+				"city": "上海",
+			},
+		},
+		"B": {
+			NodeID:   "B",
+			ToolName: "weather-search",
+			Arguments: map[string]any{
+				"city": "北京",
+			},
+		},
+	}
+	seen := make(map[string]bool)
+	recordedTasks := recordTaskPolicy.Tasks()
+	if got, want := len(recordedTasks), len(expectedByNodeID); got != want {
+		t.Fatalf("recorded task count = %d, want %d", got, want)
+	}
+	for _, gotTask := range recordedTasks {
+		wantTask, ok := expectedByNodeID[gotTask.NodeID]
+		if !ok {
+			t.Fatalf("unexpected task NodeID = %q", gotTask.NodeID)
+		}
+
+		if seen[gotTask.NodeID] {
+			t.Fatalf("duplicate task NodeID = %q", gotTask.NodeID)
+		}
+		seen[gotTask.NodeID] = true
+
+		if gotTask.ToolName != wantTask.ToolName {
+			t.Errorf(
+				"task %q ToolName = %q, want %q",
+				gotTask.NodeID,
+				gotTask.ToolName,
+				wantTask.ToolName,
+			)
+		}
+
+		if !reflect.DeepEqual(gotTask.Arguments, wantTask.Arguments) {
+			t.Errorf(
+				"task %q Arguments = %#v, want %#v",
+				gotTask.NodeID,
+				gotTask.Arguments,
+				wantTask.Arguments,
+			)
+		}
 	}
 }

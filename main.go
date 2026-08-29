@@ -108,9 +108,7 @@ func (s *FakeScheduler) Schedule(graph GraphDefinition, snapshot RuntimeSnapshot
 // tasks -> dispatch -> execute
 
 type TaskResult struct {
-	// Task result
-	// TODO: define task result
-	NodeID          string
+	Task            Task
 	Err             error
 	ExecutionResult ExecutionResult
 }
@@ -124,7 +122,7 @@ type FakeExecutor struct {
 
 func (fe *FakeExecutor) Execute(ctx context.Context, task Task) TaskResult {
 	fmt.Println("执行任务", task.NodeID)
-	return TaskResult{NodeID: task.NodeID, Err: nil}
+	return TaskResult{Task: task, Err: nil}
 }
 
 type FakeTaskPolicy struct {
@@ -133,15 +131,15 @@ type FakeTaskPolicy struct {
 func (tp *FakeTaskPolicy) Evaluate(result TaskResult) TaskOutcome {
 	if result.Err != nil {
 		return TaskOutcome{
-			NodeID:  result.NodeID,
+			NodeID:  result.Task.NodeID,
 			Err:     result.Err,
 			Success: false,
 		}
 	}
 	if result.ExecutionResult.Err != nil {
-		return TaskOutcome{NodeID: result.NodeID, Success: false, Err: result.ExecutionResult.Err}
+		return TaskOutcome{NodeID: result.Task.NodeID, Success: false, Err: result.ExecutionResult.Err}
 	}
-	return TaskOutcome{NodeID: result.NodeID, Success: true}
+	return TaskOutcome{NodeID: result.Task.NodeID, Success: true}
 }
 
 type TaskOutcome struct {
@@ -153,7 +151,6 @@ type TaskOutcome struct {
 }
 type TaskPolicy interface {
 	// Task policy
-	// TODO: define task policy
 	Evaluate(result TaskResult) TaskOutcome
 }
 
@@ -304,7 +301,8 @@ func (r *Runtime) executeReadyTasks(taskSet ReadyTaskSet) (taskOutcomes []TaskOu
 func (r *Runtime) collect(count int) []TaskOutcome {
 	taskOutcomeList := make([]TaskOutcome, 0)
 	for i := 0; i < count; i++ {
-		taskOutcomeList = append(taskOutcomeList, r.taskPolicy.Evaluate(<-r.ResultQueue))
+		taskRes := <-r.ResultQueue
+		taskOutcomeList = append(taskOutcomeList, r.taskPolicy.Evaluate(taskRes))
 	}
 	return taskOutcomeList
 }
@@ -780,7 +778,7 @@ func (e *ToolTaskExecutor) Execute(
 	})
 
 	return TaskResult{
-		NodeID:          task.NodeID,
+		Task:            task,
 		ExecutionResult: result,
 	}
 }
