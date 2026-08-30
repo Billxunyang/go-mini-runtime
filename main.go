@@ -154,6 +154,7 @@ type TaskOutcome struct {
 	NodeID  string
 	Success bool
 	Err     error
+	Reason  string
 }
 type TaskPolicy interface {
 	// Task policy
@@ -874,6 +875,67 @@ func (h *HotelSearchCriteria) Validate() error {
 	if h.MaxSubwayDistanceM < 0 {
 		return errors.New("subway distance cannot be negative")
 	}
-
 	return nil
 }
+
+type HotelSearchEvaluator struct{}
+
+func (e *HotelSearchEvaluator) Evaluate(
+	result TaskResult,
+) TaskOutcome {
+	outcome := TaskOutcome{NodeID: result.Task.NodeID}
+
+	// Execution failures should eventually bypass Evaluator in Runtime.
+	// Until that routing exists, keep this defensive boundary explicit.
+	if result.Err != nil {
+		outcome.Err = result.Err
+		return outcome
+	}
+	if result.ExecutionResult.Err != nil {
+		outcome.Err = result.ExecutionResult.Err
+		return outcome
+	}
+
+	criteria, ok := result.Task.Criteria.(*HotelSearchCriteria)
+	if !ok || criteria == nil {
+		outcome.Err = errors.New("invalid hotel search criteria")
+		return outcome
+	}
+	if err := criteria.Validate(); err != nil {
+		outcome.Err = fmt.Errorf("validate hotel search criteria: %w", err)
+		return outcome
+	}
+
+	output, ok := result.ExecutionResult.Output.(HotelSearchOutput)
+	if !ok {
+		outcome.Err = errors.New("invalid hotel search output type")
+		return outcome
+	}
+
+	if output.City == "" ||
+		output.HotelName == "" ||
+		output.CheckInDate == "" ||
+		output.CheckOutDate == "" ||
+		output.Currency == "" ||
+		output.PricePerNight < 0 ||
+		output.SubwayDistanceM < 0 {
+		outcome.Err = errors.New("invalid hotel search output")
+		return outcome
+	}
+	// TODO: 逐条比较 output 与 criteria 的业务约束。
+	// 能够评估但任一业务条件不满足时，返回 Err 为空、Reason 明确的失败 Outcome。
+	if output.City != criteria.City || output.CheckInDate != criteria.CheckInDate || output.CheckOutDate != criteria.CheckOutDate ||
+		output.PricePerNight > criteria.MaxPricePerNight || output.SubwayDistanceM > criteria.MaxSubwayDistanceM ||
+		output.Currency != criteria.Currency || !output.Available|| output.Breakfast != criteria.RequireBreakfast || {
+		outcome.Err = errors.New("invalid hotel search output")
+		return outcome
+		}
+
+	// TODO: 全部业务条件满足时，将 Success 设为 true，
+	// Reason 设为 "all criteria satisfied"，Err 保持为空。
+
+	_ = output
+	return outcome
+}
+
+var _ TaskPolicy = (*HotelSearchEvaluator)(nil)
