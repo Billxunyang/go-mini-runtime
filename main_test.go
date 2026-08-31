@@ -2023,3 +2023,249 @@ func TestHotelSearchCriteriaValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestHotelSearchEvaluatorSuccess(t *testing.T) {
+	taskRes := validHotelSearchTaskResult()
+	hotelSearchEvaluator := &HotelSearchEvaluator{}
+	outcome := hotelSearchEvaluator.Evaluate(taskRes)
+	if outcome.Err != nil {
+		t.Fatalf("hotel search fail :%v", outcome.Err.Error())
+	}
+	if !outcome.Success {
+		t.Fatalf("hotel search can be order ")
+	}
+	if outcome.Reason != "all criteria satisfied" {
+		t.Fatalf("hotel search can be order ")
+	}
+}
+
+func TestHotelSearchEvaluatorRejectsPriceAboveMaximum(t *testing.T) {
+	taskRes := validHotelSearchTaskResult()
+	output := taskRes.ExecutionResult.Output.(HotelSearchOutput)
+	output.PricePerNight = 900
+	taskRes.ExecutionResult.Output = output
+	hotelSearchEvaluator := &HotelSearchEvaluator{}
+	outcome := hotelSearchEvaluator.Evaluate(taskRes)
+	if outcome.Err != nil {
+		t.Fatalf("hotel search fail :%v", outcome.Err.Error())
+	}
+	if outcome.Success {
+		t.Fatalf("price exceeds maximum")
+	}
+	if outcome.Reason != "price exceeds maximum" {
+		t.Fatalf("price exceeds maximum")
+	}
+}
+
+func TestHotelSearchEvaluatorPropagatesExecutionFailure(t *testing.T) {
+	taskRes := validHotelSearchTaskResult()
+	taskRes.ExecutionResult.Err = &ExecutionError{
+		ErrType: ExecutionTypeInfrastructure,
+		ErrCode: "TOOL_TIMEOUT",
+		ErrMsg:  "deadline exceeded",
+	}
+	hotelSearchEvaluator := &HotelSearchEvaluator{}
+	outcome := hotelSearchEvaluator.Evaluate(taskRes)
+	if !errors.Is(outcome.Err, taskRes.ExecutionResult.Err) {
+		t.Fatalf("hotel search is %v but got %v", outcome.Err, taskRes.ExecutionResult.Err)
+	}
+	if outcome.Success {
+		t.Fatalf("price exceeds maximum")
+	}
+	if outcome.Reason != "" {
+		t.Fatalf("invalid hotel search output")
+	}
+}
+
+func TestHotelSearchEvaluatorRejectsPriceBelowMinimum(t *testing.T) {
+	taskRes := validHotelSearchTaskResult()
+	output := taskRes.ExecutionResult.Output.(HotelSearchOutput)
+	output.PricePerNight = 300
+	taskRes.ExecutionResult.Output = output
+	hotelSearchEvaluator := &HotelSearchEvaluator{}
+	outcome := hotelSearchEvaluator.Evaluate(taskRes)
+	if outcome.Err != nil {
+		t.Fatalf("hotel search fail :%v", outcome.Err.Error())
+	}
+	if outcome.Success {
+		t.Fatalf("price is below minimum")
+	}
+	if outcome.Reason != "price is below minimum" {
+		t.Fatalf("price is below minimum")
+	}
+}
+
+func TestHotelSearchEvaluatorRejectsSubwayDistanceLargerThanSubwayDistanceM(t *testing.T) {
+	taskRes := validHotelSearchTaskResult()
+	output := taskRes.ExecutionResult.Output.(HotelSearchOutput)
+	output.SubwayDistanceM = 1000
+	taskRes.ExecutionResult.Output = output
+	hotelSearchEvaluator := &HotelSearchEvaluator{}
+	outcome := hotelSearchEvaluator.Evaluate(taskRes)
+	if outcome.Err != nil {
+		t.Fatalf("hotel search fail :%v", outcome.Err.Error())
+	}
+	if outcome.Success {
+		t.Fatal("outcome succeeded, want subway distance mismatch")
+	}
+	if outcome.Reason != "subway distance exceeds maximum" {
+		t.Fatalf("reason = %q, want subway distance exceeds maximum", outcome.Reason)
+	}
+}
+
+func TestHotelSearchEvaluatorAllowsBreakfastWhenNotRequired(t *testing.T) {
+	taskRes := validHotelSearchTaskResult()
+	criteria, ok := taskRes.Task.Criteria.(*HotelSearchCriteria)
+	if !ok {
+		t.Fatal("criteria is not *HotelSearchCriteria")
+	}
+	criteria.RequireBreakfast = false
+	hotelSearchEvaluator := &HotelSearchEvaluator{}
+	outcome := hotelSearchEvaluator.Evaluate(taskRes)
+	if outcome.Err != nil {
+		t.Fatalf("hotel search fail :%v", outcome.Err.Error())
+	}
+	if outcome.Reason != "all criteria satisfied" {
+		t.Fatalf("hotel search can be order ")
+	}
+	if !outcome.Success {
+		t.Fatalf("hotel search can be order ")
+	}
+}
+
+func TestHotelSearchEvaluatorRejectsUnavailableWhenRequired(t *testing.T) {
+	taskRes := validHotelSearchTaskResult()
+	output := taskRes.ExecutionResult.Output.(HotelSearchOutput)
+	output.Available = false
+	taskRes.ExecutionResult.Output = output
+	hotelSearchEvaluator := &HotelSearchEvaluator{}
+	outcome := hotelSearchEvaluator.Evaluate(taskRes)
+	if outcome.Err != nil {
+		t.Fatalf("hotel search fail :%v", outcome.Err.Error())
+	}
+	if outcome.Success {
+		t.Fatal("outcome succeeded, want unavailable mismatch")
+	}
+	if outcome.Reason != "hotel is unavailable" {
+		t.Fatalf("reason = %q, want hotel is unavailable", outcome.Reason)
+	}
+}
+
+func validHotelSearchTaskResult() TaskResult {
+	return TaskResult{
+		Task: Task{
+			NodeID: "hotel",
+			Criteria: &HotelSearchCriteria{
+				City:               "上海",
+				CheckInDate:        "2026-09-01",
+				CheckOutDate:       "2026-09-03",
+				MaxPricePerNight:   800,
+				MinPricePerNight:   500,
+				Currency:           "RMB",
+				RequireAvailable:   true,
+				RequireBreakfast:   true,
+				MaxSubwayDistanceM: 800,
+			},
+		},
+		Err: nil,
+		ExecutionResult: ExecutionResult{
+			InvocationID: "hotel-2",
+			Output: HotelSearchOutput{
+				HotelName:       "韩冷家",
+				PricePerNight:   600,
+				City:            "上海",
+				CheckInDate:     "2026-09-01",
+				CheckOutDate:    "2026-09-03",
+				SubwayDistanceM: 500,
+				Currency:        "RMB",
+				Breakfast:       true,
+				Available:       true,
+			},
+		},
+	}
+}
+
+func TestHotelSearchEvaluatorRejectsCheckOutDateMismatch(t *testing.T) {
+	taskRes := validHotelSearchTaskResult()
+	output := taskRes.ExecutionResult.Output.(HotelSearchOutput)
+	output.CheckOutDate = "2026-09-04"
+	taskRes.ExecutionResult.Output = output
+	hotelSearchEvaluator := &HotelSearchEvaluator{}
+	outcome := hotelSearchEvaluator.Evaluate(taskRes)
+	if outcome.Err != nil {
+		t.Fatalf("hotel search fail :%v", outcome.Err.Error())
+	}
+	if outcome.Success {
+		t.Fatalf("check-out date does not match")
+	}
+	if outcome.Reason != "check-out date does not match" {
+		t.Fatalf("check-out date does not match")
+	}
+}
+
+func TestHotelSearchEvaluatorRemainingBusinessConditions(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*HotelSearchCriteria, *HotelSearchOutput)
+		wantReason string
+	}{
+		{
+			name: "check-in date mismatch",
+			mutate: func(_ *HotelSearchCriteria, output *HotelSearchOutput) {
+				output.CheckInDate = "2026-09-02"
+			},
+			wantReason: "check-in date does not match",
+		},
+		{
+			name: "city mismatch",
+			mutate: func(_ *HotelSearchCriteria, output *HotelSearchOutput) {
+				output.City = "北京"
+			},
+			wantReason: "city does not match",
+		},
+		{
+			name: "currency mismatch",
+			mutate: func(_ *HotelSearchCriteria, output *HotelSearchOutput) {
+				output.Currency = "USD"
+			},
+			wantReason: "currency does not match",
+		},
+		{
+			name: "breakfast required",
+			mutate: func(_ *HotelSearchCriteria, output *HotelSearchOutput) {
+				output.Breakfast = false
+			},
+			wantReason: "breakfast is required",
+		},
+		{
+			name: "availability not required",
+			mutate: func(criteria *HotelSearchCriteria, output *HotelSearchOutput) {
+				criteria.RequireAvailable = false
+				output.Available = false
+			},
+			wantReason: "all criteria satisfied",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			taskRes := validHotelSearchTaskResult()
+			criteria := taskRes.Task.Criteria.(*HotelSearchCriteria)
+			output := taskRes.ExecutionResult.Output.(HotelSearchOutput)
+			tt.mutate(criteria, &output)
+			taskRes.ExecutionResult.Output = output
+
+			outcome := (&HotelSearchEvaluator{}).Evaluate(taskRes)
+			if outcome.Err != nil {
+				t.Fatalf("Evaluate() error = %v, want nil", outcome.Err)
+			}
+			if got := outcome.Reason; got != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", got, tt.wantReason)
+			}
+			wantSuccess := tt.wantReason == "all criteria satisfied"
+			if outcome.Success != wantSuccess {
+				t.Fatalf("success = %v, want %v", outcome.Success, wantSuccess)
+			}
+		})
+	}
+}

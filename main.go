@@ -922,19 +922,44 @@ func (e *HotelSearchEvaluator) Evaluate(
 		outcome.Err = errors.New("invalid hotel search output")
 		return outcome
 	}
-	// TODO: 逐条比较 output 与 criteria 的业务约束。
-	// 能够评估但任一业务条件不满足时，返回 Err 为空、Reason 明确的失败 Outcome。
-	if output.City != criteria.City || output.CheckInDate != criteria.CheckInDate || output.CheckOutDate != criteria.CheckOutDate ||
-		output.PricePerNight > criteria.MaxPricePerNight || output.SubwayDistanceM > criteria.MaxSubwayDistanceM ||
-		output.Currency != criteria.Currency || !output.Available|| output.Breakfast != criteria.RequireBreakfast || {
-		outcome.Err = errors.New("invalid hotel search output")
+	if output.City != criteria.City {
+		outcome.Reason = "city does not match"
 		return outcome
-		}
-
-	// TODO: 全部业务条件满足时，将 Success 设为 true，
-	// Reason 设为 "all criteria satisfied"，Err 保持为空。
-
-	_ = output
+	}
+	if output.CheckInDate != criteria.CheckInDate {
+		outcome.Reason = "check-in date does not match"
+		return outcome
+	}
+	if output.CheckOutDate != criteria.CheckOutDate {
+		outcome.Reason = "check-out date does not match"
+		return outcome
+	}
+	if output.Currency != criteria.Currency {
+		outcome.Reason = "currency does not match"
+		return outcome
+	}
+	if criteria.RequireAvailable && !output.Available {
+		outcome.Reason = "hotel is unavailable"
+		return outcome
+	}
+	if criteria.RequireBreakfast && !output.Breakfast {
+		outcome.Reason = "breakfast is required"
+		return outcome
+	}
+	if output.SubwayDistanceM > criteria.MaxSubwayDistanceM {
+		outcome.Reason = "subway distance exceeds maximum"
+		return outcome
+	}
+	if output.PricePerNight < criteria.MinPricePerNight {
+		outcome.Reason = "price is below minimum"
+		return outcome
+	}
+	if output.PricePerNight > criteria.MaxPricePerNight {
+		outcome.Reason = "price exceeds maximum"
+		return outcome
+	}
+	outcome.Success = true
+	outcome.Reason = "all criteria satisfied"
 	return outcome
 }
 
