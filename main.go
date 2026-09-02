@@ -235,6 +235,13 @@ type Checkpointer interface {
 	Load(runtimeId string) (RuntimeSnapshot, error)
 }
 type RuntimeStatus string
+type RunMetrics struct {
+	Steps         int
+	ToolSuccesses int
+	ToolFailures  int
+	Checkpoints   int
+	Duration      time.Duration
+}
 
 const (
 	RuntimeRunning  RuntimeStatus = "running"
@@ -263,8 +270,12 @@ type Runtime struct {
 	TaskQueue   chan Task
 	ResultQueue chan TaskResult
 	workerNum   int
+	metrics     RunMetrics
 }
 
+func (r *Runtime) Metrics() RunMetrics {
+	return r.metrics
+}
 func (r *Runtime) initWorker(workerNum int) {
 	r.workerNum = workerNum
 	r.TaskQueue = make(chan Task, workerNum)
@@ -309,6 +320,12 @@ func (r *Runtime) collect(count int) []TaskOutcome {
 	taskOutcomeList := make([]TaskOutcome, 0)
 	for i := 0; i < count; i++ {
 		taskRes := <-r.ResultQueue
+		r.metrics.Steps++
+		if taskRes.Err != nil || taskRes.ExecutionResult.Err != nil {
+			r.metrics.ToolFailures++
+		} else {
+			r.metrics.ToolSuccesses++
+		}
 		taskOutcomeList = append(taskOutcomeList, r.taskPolicy.Evaluate(taskRes))
 	}
 	return taskOutcomeList
@@ -321,6 +338,11 @@ func (r *Runtime) stopWorker() {
 }
 
 func (r *Runtime) runLoop(ctx context.Context, snapshot RuntimeSnapshot) (newSnapshot RuntimeSnapshot, err error) {
+	r.metrics = RunMetrics{}
+	startedAt := time.Now()
+	defer func() {
+		r.metrics.Duration = time.Since(startedAt)
+	}()
 	valid, validateErr := ValidateGraph(r.graph)
 	if validateErr != nil {
 		err = validateErr
@@ -362,6 +384,7 @@ func (r *Runtime) runLoop(ctx context.Context, snapshot RuntimeSnapshot) (newSna
 			fmt.Println("checkpointer err ", err)
 			return
 		}
+		r.metrics.Checkpoints++
 		newSnapshot = candidateSnapshot
 		needContinue, err = r.decideLoop(&newSnapshot)
 		if needContinue {

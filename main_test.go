@@ -196,6 +196,22 @@ func TestRuntimeABC(t *testing.T) {
 			)
 		}
 	}
+	metrics := nRun.Metrics()
+	if metrics.Steps != 3 {
+		t.Fatalf("metrics steps = %d, want 3", metrics.Steps)
+	}
+	if metrics.ToolSuccesses != 3 {
+		t.Fatalf("metrics tool successes = %d, want 3", metrics.ToolSuccesses)
+	}
+	if metrics.ToolFailures != 0 {
+		t.Fatalf("metrics tool failures = %d, want 0", metrics.ToolFailures)
+	}
+	if metrics.Checkpoints != 3 {
+		t.Fatalf("metrics checkpoints = %d, want 3", metrics.Checkpoints)
+	}
+	if metrics.Duration <= 0 {
+		t.Fatalf("metrics duration = %v, want positive duration", metrics.Duration)
+	}
 }
 func TestExecuteReadyTasksKeepsAllBatches(t *testing.T) {
 	recordExecutor := &RecordingExecutor{}
@@ -1138,12 +1154,9 @@ func TestRuntimeRecordsToolTimeoutAsFailure(t *testing.T) {
 	if ctx.Err() != context.DeadlineExceeded {
 		t.Fatalf("ctx.Err() = %#v, want DeadlineExceeded", ctx.Err())
 	}
-	//err != nil
-	//ctx.Err() == context.DeadlineExceeded
 	if finalSnapshot.Status != RuntimeFailed {
 		t.Fatalf("finalSnapshot = %#v, want RuntimeFailed", finalSnapshot.Status)
 	}
-	//finalSnapshot.Status == RuntimeFailed
 	if finalSnapshot.CompleteNodes["A"] {
 		t.Fatalf("finalSnapshot = %#v, want false", finalSnapshot.CompleteNodes["A"])
 	}
@@ -1153,17 +1166,36 @@ func TestRuntimeRecordsToolTimeoutAsFailure(t *testing.T) {
 			finalSnapshot.FailedNodes["A"],
 		)
 	}
-	//finalSnapshot.FailedNodes["A"] == true
-	//finalSnapshot.CompleteNodes["A"] == false
 	if checkpointer.SaveCount() != 1 {
 		t.Fatalf("checkpointer.SaveCount = %d, want 1", checkpointer.SaveCount())
 	}
-	//checkpointer.SaveCount() == 1
 	snapshots := checkpointer.Snapshots()
 	if !snapshots[0].FailedNodes["A"] {
 		t.Fatal("checkpoint did not persist node A failure")
 	}
-	//Checkpoint 中也记录了 FailedNodes["A"]
+	metrics := runtimeEngine.Metrics()
+
+	if metrics.Steps != 1 {
+		t.Fatalf("metrics steps = %d, want 1", metrics.Steps)
+	}
+	if metrics.ToolSuccesses != 0 {
+		t.Fatalf(
+			"metrics tool successes = %d, want 0",
+			metrics.ToolSuccesses,
+		)
+	}
+	if metrics.ToolFailures != 1 {
+		t.Fatalf(
+			"metrics tool failures = %d, want 1",
+			metrics.ToolFailures,
+		)
+	}
+	if metrics.Checkpoints != 1 {
+		t.Fatalf(
+			"metrics checkpoints = %d, want 1",
+			metrics.Checkpoints,
+		)
+	}
 }
 
 func TestCandidateSnapshot(t *testing.T) {
@@ -1258,6 +1290,29 @@ func TestSaveFailedSnapshotPure(t *testing.T) {
 	}
 	if finalSnapshot.CompleteNodes["A"] {
 		t.Fatalf("finalSnapshot CompleteNodes must be empty")
+	}
+	metrics := runtimeEngine.Metrics()
+
+	if metrics.Steps != 1 {
+		t.Fatalf("metrics steps = %d, want 1", metrics.Steps)
+	}
+	if metrics.ToolSuccesses != 1 {
+		t.Fatalf(
+			"metrics tool successes = %d, want 1",
+			metrics.ToolSuccesses,
+		)
+	}
+	if metrics.ToolFailures != 0 {
+		t.Fatalf(
+			"metrics tool failures = %d, want 0",
+			metrics.ToolFailures,
+		)
+	}
+	if metrics.Checkpoints != 0 {
+		t.Fatalf(
+			"metrics checkpoints = %d, want 0",
+			metrics.Checkpoints,
+		)
 	}
 }
 
